@@ -20,6 +20,7 @@ import (
 // typography and 1px borders rather than heavy fills.
 type Palette struct {
 	Bg            color.NRGBA
+	BgLeft        color.NRGBA
 	BgHeader      color.NRGBA
 	BgRowAlt      color.NRGBA // subtle hover/active row tint
 	BgRowSelected color.NRGBA // stronger selection tint
@@ -41,6 +42,7 @@ type Palette struct {
 func darkPalette() Palette {
 	return Palette{
 		Bg:            rgb(0x0d1017),
+		BgLeft:        rgb(0x06080b),
 		BgHeader:      rgb(0x0d1017),
 		BgRowAlt:      rgb(0x141821),
 		BgRowSelected: rgb(0x1a1f2c),
@@ -63,6 +65,7 @@ func darkPalette() Palette {
 func lightPalette() Palette {
 	return Palette{
 		Bg:            rgb(0xffffff),
+		BgLeft:        rgb(0xf6f8fa),
 		BgHeader:      rgb(0xffffff),
 		BgRowAlt:      rgb(0xf5f7f9),
 		BgRowSelected: rgb(0xe8ebf0),

@@ -11,6 +11,7 @@ import (
 	_ "image/png"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ const (
 	viewHelp
 	viewAccounts
 	viewSettings
+	viewLinks
 )
 
 type pane int
@@ -47,6 +49,11 @@ const (
 	paneList pane = iota
 	paneMessage
 )
+
+type linkItem struct {
+	text string
+	url  string
+}
 
 type Settings struct {
 	DefaultAccount string
@@ -108,6 +115,9 @@ type App struct {
 	scroll    int // index of first visible row
 	message   *mail.Message
 	messageList widget.List
+	links     []linkItem
+	linkCursor int
+	linkScroll int
 	status    string
 	loading   bool
 	searchQ   string
@@ -317,6 +327,12 @@ func (a *App) handleKeys(ctx context.Context, gtx layout.Context) {
 		key.Filter{Name: "⎋"},
 		key.Filter{Name: "[", Required: key.ModCtrl},
 		key.Filter{Name: "S", Required: key.ModCtrl},
+		key.Filter{Name: "W", Required: key.ModCtrl},
+		key.Filter{Name: "N", Required: key.ModCtrl},
+		key.Filter{Name: "P", Required: key.ModCtrl},
+		key.Filter{Name: "K", Required: key.ModCtrl},
+		key.Filter{Name: "↑"},
+		key.Filter{Name: "↓"},
 	)
 
 	for {
@@ -339,12 +355,47 @@ func isEscape(ke key.Event) bool {
 	return ke.Name == "⎋" || (ke.Name == "[" && ke.Modifiers.Contain(key.ModCtrl))
 }
 
+func deleteLastWord(ed *widget.Editor) {
+	txt := ed.Text()
+	if len(txt) == 0 {
+		return
+	}
+	// Gio editors use rune offsets for CaretPos and SetCaret in recent versions.
+	caret, _ := ed.CaretPos()
+	if caret == 0 {
+		return
+	}
+
+	runes := []rune(txt)
+	if caret > len(runes) {
+		caret = len(runes)
+	}
+	i := caret - 1
+
+	// Skip trailing whitespace
+	for i >= 0 && (runes[i] == ' ' || runes[i] == '\t' || runes[i] == '\n' || runes[i] == '\r') {
+		i--
+	}
+	// Skip word
+	for i >= 0 && runes[i] != ' ' && runes[i] != '\t' && runes[i] != '\n' && runes[i] != '\r' {
+		i--
+	}
+	// i is now at the space before the word, or -1.
+	newCaret := i + 1
+
+	ed.SetCaret(newCaret, caret)
+	ed.Delete(1)
+}
+
 func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
+	a.mu.Lock()
+
 	// In insert/search modes, only handle Esc / Enter / Ctrl-S — let the
 	// editor widgets capture the rest via their own input handling.
 	if a.mode == keys.ModeInsert {
 		if isEscape(ke) {
 			a.exitInsert()
+			a.mu.Unlock()
 			return
 		}
 		switch ke.Name {
@@ -352,25 +403,67 @@ func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
 			if a.view == viewCompose {
 				a.composeFocus = (a.composeFocus + 1) % 3
 			}
+			a.mu.Unlock()
 			return
 		}
 		if ke.Modifiers.Contain(key.ModCtrl) && ke.Name == "S" {
 			a.sendCompose(ctx)
+			a.mu.Unlock()
 			return
 		}
+		if ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "W") {
+			var target *widget.Editor
+			switch a.composeFocus {
+			case 0:
+				target = &a.to
+			case 1:
+				target = &a.subject
+			default:
+				target = &a.body
+			}
+			deleteLastWord(target)
+			a.mu.Unlock()
+			return
+		}
+		a.mu.Unlock()
 		return
 	}
 	if a.mode == keys.ModeSearch {
 		if isEscape(ke) {
 			a.mode = keys.ModeNormal
 			a.status = ""
+			a.mu.Unlock()
 			return
 		}
 		switch ke.Name {
 		case "⏎":
+			a.mu.Unlock()
 			a.runSearch(ctx)
 			return
 		}
+		if ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "W") {
+			deleteLastWord(&a.searchBuf)
+			a.mu.Unlock()
+			return
+		}
+		if ke.Modifiers.Contain(key.ModCtrl) || ke.Name == "↑" || ke.Name == "↓" {
+			name := string(ke.Name)
+			if strings.EqualFold(name, "N") || name == "↓" || (ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(name, "J")) {
+				if a.moveCursor(1) {
+					a.openCurrent(ctx)
+				}
+				a.mu.Unlock()
+				return
+			}
+			if strings.EqualFold(name, "P") || name == "↑" {
+				if a.moveCursor(-1) {
+					a.openCurrent(ctx)
+				}
+				a.mu.Unlock()
+				return
+			}
+		}
+		a.mu.Unlock()
 		return
 	}
 
@@ -380,8 +473,10 @@ func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
 		a.status = pend
 	}
 	if act == keys.ActNone {
+		a.mu.Unlock()
 		return
 	}
+	a.mu.Unlock()
 	a.run(ctx, act)
 }
 
@@ -438,48 +533,75 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 	case keys.ActHelp:
 		a.view = viewHelp
 	case keys.ActSettings:
-		a.view = viewSettings
-		a.mode = keys.ModeNormal
-		a.status = "-- SETTINGS --"
+		if a.view == viewSettings {
+			a.view = viewList
+			a.status = ""
+		} else {
+			a.view = viewSettings
+			a.mode = keys.ModeNormal
+			a.status = "-- SETTINGS --"
+		}
 	case keys.ActDown:
-		if a.focus == paneList {
-			a.moveCursor(1)
-			if a.view == viewList || a.view == viewMessage {
-				a.openCurrent(ctx)
+		if a.view == viewLinks {
+			a.moveLinkCursor(1)
+		} else if a.focus == paneList {
+			if a.moveCursor(1) {
+				if a.view == viewList || a.view == viewMessage {
+					a.openCurrent(ctx)
+				}
 			}
 		} else {
 			a.messageList.Position.Offset += 50
 		}
 	case keys.ActUp:
-		if a.focus == paneList {
-			a.moveCursor(-1)
-			if a.view == viewList || a.view == viewMessage {
-				a.openCurrent(ctx)
+		if a.view == viewLinks {
+			a.moveLinkCursor(-1)
+		} else if a.focus == paneList {
+			if a.moveCursor(-1) {
+				if a.view == viewList || a.view == viewMessage {
+					a.openCurrent(ctx)
+				}
 			}
 		} else {
 			a.messageList.Position.Offset -= 50
 		}
 	case keys.ActPageDown:
-		if a.focus == paneList {
-			a.moveCursor(10)
+		if a.view == viewLinks {
+			a.moveLinkCursor(10)
+		} else if a.focus == paneList {
+			if a.moveCursor(10) {
+				a.openCurrent(ctx)
+			}
 		} else {
 			a.messageList.Position.Offset += 500
 		}
 	case keys.ActPageUp:
-		if a.focus == paneList {
-			a.moveCursor(-10)
+		if a.view == viewLinks {
+			a.moveLinkCursor(-10)
+		} else if a.focus == paneList {
+			if a.moveCursor(-10) {
+				a.openCurrent(ctx)
+			}
 		} else {
 			a.messageList.Position.Offset -= 500
 		}
 	case keys.ActTop:
-		if a.focus == paneList {
+		if a.view == viewLinks {
+			a.linkCursor = 0
+		} else if a.focus == paneList {
 			a.cursor = 0
+			a.openCurrent(ctx)
 		} else {
 			a.messageList.Position.First = 0
 			a.messageList.Position.Offset = 0
 		}
 	case keys.ActBottom:
-		if a.focus == paneList {
+		if a.view == viewLinks {
+			a.linkCursor = len(a.links) - 1
+			if a.linkCursor < 0 {
+				a.linkCursor = 0
+			}
+		} else if a.focus == paneList {
 			max := len(a.items)
 			if a.view == viewAccounts {
 				max = len(a.accounts)
@@ -488,6 +610,7 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 			if a.cursor < 0 {
 				a.cursor = 0
 			}
+			a.openCurrent(ctx)
 		} else {
 			// rough approximation
 			a.messageList.Position.First = 1000
@@ -498,17 +621,28 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 				email := a.accounts[a.cursor]
 				go a.switchToAccount(ctx, email)
 			}
+		} else if a.view == viewLinks {
+			if a.linkCursor >= 0 && a.linkCursor < len(a.links) {
+				url := a.links[a.linkCursor].url
+				go exec.Command("xdg-open", url).Start()
+			}
+			a.view = viewMessage
 		} else if a.view == viewList || a.view == viewMessage {
 			if a.focus == paneList {
 				a.focus = paneMessage
-			} else {
 				a.openCurrent(ctx)
+			} else {
+				if a.message != nil {
+					a.openLinksDialog()
+				}
 			}
 		} else {
 			a.openCurrent(ctx)
 		}
 	case keys.ActBack:
 		switch a.view {
+		case viewLinks:
+			a.view = viewMessage
 		case viewMessage, viewList:
 			if a.focus == paneMessage {
 				a.focus = paneList
@@ -569,14 +703,15 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 	}
 }
 
-func (a *App) moveCursor(d int) {
+func (a *App) moveCursor(d int) bool {
 	max := len(a.items)
 	if a.view == viewAccounts {
 		max = len(a.accounts)
 	}
 	if max == 0 {
-		return
+		return false
 	}
+	old := a.cursor
 	a.cursor += d
 	if a.cursor < 0 {
 		a.cursor = 0
@@ -584,6 +719,45 @@ func (a *App) moveCursor(d int) {
 	if a.cursor >= max {
 		a.cursor = max - 1
 	}
+	return a.cursor != old
+}
+
+func (a *App) moveLinkCursor(d int) {
+	max := len(a.links)
+	if max == 0 {
+		return
+	}
+	a.linkCursor += d
+	if a.linkCursor < 0 {
+		a.linkCursor = 0
+	}
+	if a.linkCursor >= max {
+		a.linkCursor = max - 1
+	}
+}
+
+func (a *App) openLinksDialog() {
+	var links []linkItem
+	for _, s := range a.message.Body {
+		if s.URL != "" {
+			text := strings.TrimSpace(s.Text)
+			text = strings.ReplaceAll(text, "\n", " ")
+			if text == "" {
+				text = "(no text)"
+			}
+			links = append(links, linkItem{text: text, url: s.URL})
+		}
+	}
+	if len(links) == 0 {
+		a.status = "no links in message"
+		return
+	}
+	a.links = links
+	a.linkCursor = 0
+	a.linkScroll = 0
+	a.view = viewLinks
+	a.status = "select a link to open in browser"
+	a.win.Invalidate()
 }
 
 // ---------- async ops ----------
@@ -669,10 +843,12 @@ func (a *App) refresh(ctx context.Context) {
 	}
 	folderName := folders[a.folderIdx].name
 	a.mu.Unlock()
+
 	a.setStatus(fmt.Sprintf("loading %s…", folderName))
 
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+
 	items, err := a.client.List(cctx, q, 50)
 
 	a.mu.Lock()
@@ -697,6 +873,9 @@ func (a *App) setStatus(s string) {
 	a.win.Invalidate()
 }
 
+// openCurrent kicks off an async fetch of the message under the cursor.
+// Caller must hold a.mu — we read a.cursor/a.items synchronously, then the
+// goroutine re-acquires the lock to publish the result.
 func (a *App) openCurrent(ctx context.Context) {
 	if a.cursor < 0 || a.cursor >= len(a.items) {
 		return
@@ -713,9 +892,7 @@ func (a *App) openCurrent(ctx context.Context) {
 			a.message = m
 			a.view = viewMessage
 			if m.Unread {
-				go func() {
-					_ = a.client.MarkRead(ctx, m.ID)
-				}()
+				go func() { _ = a.client.MarkRead(ctx, m.ID) }()
 			}
 		}
 		a.mu.Unlock()
@@ -802,9 +979,12 @@ func (a *App) markRead(ctx context.Context, read bool) {
 }
 
 func (a *App) runSearch(ctx context.Context) {
+	a.mu.Lock()
 	q := strings.TrimSpace(a.searchBuf.Text())
 	a.searchQ = q
+	a.focus = paneList
 	a.mode = keys.ModeNormal
+	a.mu.Unlock()
 	go a.refresh(ctx)
 }
 

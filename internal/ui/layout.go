@@ -35,6 +35,8 @@ func (a *App) layout(gtx layout.Context) {
 				return a.layoutSplit(gtx)
 			case viewAccounts:
 				return a.layoutAccounts(gtx)
+			case viewLinks:
+				return a.layoutLinks(gtx)
 			case viewCompose:
 				return a.layoutCompose(gtx)
 			case viewHelp:
@@ -60,7 +62,7 @@ func (a *App) layoutSplit(gtx layout.Context) layout.Dimensions {
 		layout.Flexed(leftWeight, func(gtx layout.Context) layout.Dimensions {
 			a.th.SetDarkMode(a.settings.DarkModeLeft)
 			return withBorder(gtx, a.th.Pal.Accent, borders{Right: a.focus == paneList}, func(gtx layout.Context) layout.Dimensions {
-				return paintedBg(gtx, a.th.Pal.Bg, func(gtx layout.Context) layout.Dimensions {
+				return paintedBg(gtx, a.th.Pal.BgLeft, func(gtx layout.Context) layout.Dimensions {
 					return a.layoutList(gtx)
 				})
 			})
@@ -186,7 +188,10 @@ func (a *App) layoutStatus(gtx layout.Context) layout.Dimensions {
 }
 
 func (a *App) layoutList(gtx layout.Context) layout.Dimensions {
-	if len(a.items) == 0 {
+	items := a.items
+	cursor := a.cursor
+
+	if len(items) == 0 {
 		return centerLabel(gtx, a.th, "(no messages — press R to refresh)")
 	}
 
@@ -203,19 +208,19 @@ func (a *App) layoutList(gtx layout.Context) layout.Dimensions {
 	if visible <= 0 {
 		visible = 1
 	}
-	if a.cursor < a.scroll {
-		a.scroll = a.cursor
+	if cursor < a.scroll {
+		a.scroll = cursor
 	}
-	if a.cursor >= a.scroll+visible {
-		a.scroll = a.cursor - visible + 1
+	if cursor >= a.scroll+visible {
+		a.scroll = cursor - visible + 1
 	}
 	if a.scroll < 0 {
 		a.scroll = 0
 	}
 
 	end := a.scroll + visible
-	if end > len(a.items) {
-		end = len(a.items)
+	if end > len(items) {
+		end = len(items)
 	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, layout.Flexed(1,
@@ -224,7 +229,7 @@ func (a *App) layoutList(gtx layout.Context) layout.Dimensions {
 			for i := a.scroll; i < end; i++ {
 				idx := i
 				children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.layoutListRow(gtx, idx, a.items[idx])
+					return a.layoutListRow(gtx, idx, items[idx])
 				}))
 			}
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
@@ -233,6 +238,8 @@ func (a *App) layoutList(gtx layout.Context) layout.Dimensions {
 }
 
 func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.Dimensions {
+	cursor := a.cursor
+
 	fontSize := a.th.Fonts.List.Size
 	if fontSize == 0 {
 		fontSize = a.th.Fonts.Global.Size
@@ -242,7 +249,7 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 	}
 	rowH := gtx.Dp(unit.Dp(fontSize * 1.8))
 	macro := image.Pt(gtx.Constraints.Max.X, rowH)
-	if idx == a.cursor {
+	if idx == cursor {
 		paint.FillShape(gtx.Ops, a.th.Pal.BgRowSelected, clip.Rect{Max: macro}.Op())
 		bar := max(gtx.Dp(unit.Dp(2)), 1)
 		paint.FillShape(gtx.Ops, a.th.Pal.Accent, clip.Rect{Max: image.Pt(bar, rowH)}.Op())
@@ -263,7 +270,7 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 		func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min.Y = rowH
 			gtx.Constraints.Max.Y = rowH
-			fromColor := a.th.Pal.Text
+			fromColor := a.th.Pal.TextDim
 			if s.Unread {
 				fromColor = a.th.Pal.TextStrong
 			}
@@ -382,6 +389,100 @@ func (a *App) layoutAccountRow(gtx layout.Context, idx int, email string) layout
 					if email == a.email {
 						lbl.Font.Weight = font.Bold
 					}
+					return lbl.Layout(gtx)
+				}),
+			)
+		})
+}
+
+func (a *App) layoutLinks(gtx layout.Context) layout.Dimensions {
+	if len(a.links) == 0 {
+		return centerLabel(gtx, a.th, "(no links)")
+	}
+
+	fontSize := a.th.Fonts.List.Size
+	if fontSize == 0 {
+		fontSize = a.th.Fonts.Global.Size
+	}
+	if fontSize == 0 {
+		fontSize = float32(a.th.TextSize)
+	}
+	rowH := gtx.Dp(unit.Dp(fontSize * 3.6))
+	visible := gtx.Constraints.Max.Y / rowH
+	if visible <= 0 {
+		visible = 1
+	}
+	if a.linkCursor < a.linkScroll {
+		a.linkScroll = a.linkCursor
+	}
+	if a.linkCursor >= a.linkScroll+visible {
+		a.linkScroll = a.linkCursor - visible + 1
+	}
+	if a.linkScroll < 0 {
+		a.linkScroll = 0
+	}
+
+	end := a.linkScroll + visible
+	if end > len(a.links) {
+		end = len(a.links)
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: unit.Dp(10), Top: unit.Dp(10), Left: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				l := material.Label(a.th.Theme, unit.Sp(16), "Links in message")
+				l.Color = a.th.Pal.Accent
+				l.Font.Weight = font.Bold
+				return l.Layout(gtx)
+			})
+		}),
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			var children []layout.FlexChild
+			for i := a.linkScroll; i < end; i++ {
+				idx := i
+				link := a.links[i]
+				children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.layoutLinkRow(gtx, idx, link)
+				}))
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+		}),
+	)
+}
+
+func (a *App) layoutLinkRow(gtx layout.Context, idx int, link linkItem) layout.Dimensions {
+	fontSize := a.th.Fonts.List.Size
+	if fontSize == 0 {
+		fontSize = a.th.Fonts.Global.Size
+	}
+	if fontSize == 0 {
+		fontSize = float32(a.th.TextSize)
+	}
+	rowH := gtx.Dp(unit.Dp(fontSize * 3.6))
+	macro := image.Pt(gtx.Constraints.Max.X, rowH)
+	if idx == a.linkCursor {
+		paint.FillShape(gtx.Ops, a.th.Pal.BgRowSelected, clip.Rect{Max: macro}.Op())
+		bar := max(gtx.Dp(unit.Dp(2)), 1)
+		paint.FillShape(gtx.Ops, a.th.Pal.Accent, clip.Rect{Max: image.Pt(bar, rowH)}.Op())
+	}
+
+	return layout.Inset{Left: unit.Dp(14), Right: unit.Dp(12), Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min.Y = rowH - gtx.Dp(unit.Dp(8))
+			gtx.Constraints.Max.Y = rowH - gtx.Dp(unit.Dp(8))
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Label(a.th.Theme, unit.Sp(fontSize), truncate(link.text, 80))
+					lbl.Color = a.th.Pal.TextStrong
+					a.th.applyFont(&lbl, a.th.Fonts.List)
+					return lbl.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Label(a.th.Theme, unit.Sp(fontSize), link.url)
+					lbl.Color = a.th.Pal.Link
+					a.th.applyFont(&lbl, a.th.Fonts.List)
+					lbl.MaxLines = 1
+					lbl.Truncator = "…"
 					return lbl.Layout(gtx)
 				}),
 			)
