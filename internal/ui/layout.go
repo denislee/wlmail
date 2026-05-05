@@ -700,7 +700,7 @@ Actions
   f              forward
   c              compose
   ,              settings
-  R              refresh
+  R / Ctrl-r     refresh
   /              search (Enter to run)
   n / N          next / prev (search)
   q              quit

@@ -336,6 +336,7 @@ func (a *App) handleKeys(ctx context.Context, gtx layout.Context) {
 		key.Filter{Name: "⎋"},
 		key.Filter{Name: "[", Required: key.ModCtrl},
 		key.Filter{Name: "S", Required: key.ModCtrl},
+		key.Filter{Name: "R", Required: key.ModCtrl},
 		key.Filter{Name: "W", Required: key.ModCtrl},
 		key.Filter{Name: "N", Required: key.ModCtrl},
 		key.Filter{Name: "P", Required: key.ModCtrl},
@@ -398,6 +399,12 @@ func deleteLastWord(ed *widget.Editor) {
 
 func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
 	a.mu.Lock()
+
+	if ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "R") {
+		go a.refresh(ctx)
+		a.mu.Unlock()
+		return
+	}
 
 	// In insert/search modes, only handle Esc / Enter / Ctrl-S — let the
 	// editor widgets capture the rest via their own input handling.
@@ -642,7 +649,6 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 				url := a.links[a.linkCursor].url
 				go exec.Command("xdg-open", url).Start()
 			}
-			a.view = viewMessage
 		} else if a.view == viewList || a.view == viewMessage {
 			if a.focus == paneList {
 				a.focus = paneMessage
@@ -884,7 +890,7 @@ func (a *App) refresh(ctx context.Context) {
 	folderName := folders[a.folderIdx].name
 	a.mu.Unlock()
 
-	a.setStatus(fmt.Sprintf("loading %s…", folderName))
+	a.setStatus(fmt.Sprintf("checking %s…", strings.ToLower(folderName)))
 
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -893,7 +899,7 @@ func (a *App) refresh(ctx context.Context) {
 	maxItems := a.listMax
 	a.mu.Unlock()
 
-	items, err := a.client.List(cctx, q, maxItems)
+	items, err := a.client.List(cctx, q, int64(maxItems))
 
 	a.mu.Lock()
 	a.loading = false
@@ -904,7 +910,18 @@ func (a *App) refresh(ctx context.Context) {
 		if a.cursor >= len(items) {
 			a.cursor = 0
 		}
-		a.status = fmt.Sprintf("%s — %d messages", folderName, len(items))
+		unread := 0
+		for _, it := range items {
+			if it.Unread {
+				unread++
+			}
+		}
+		now := time.Now().Format("15:04")
+		if unread > 0 {
+			a.status = fmt.Sprintf("%s — %d messages (%d unread) — %s", folderName, len(items), unread, now)
+		} else {
+			a.status = fmt.Sprintf("%s — %d messages — %s", folderName, len(items), now)
+		}
 	}
 	a.mu.Unlock()
 	a.win.Invalidate()

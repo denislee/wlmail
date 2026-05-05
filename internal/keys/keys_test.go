@@ -13,6 +13,7 @@ func TestSimpleBindings(t *testing.T) {
 		{Press{Name: "Enter"}, ActOpen},
 		{Press{Rune: 'd', Ctrl: true}, ActPageDown},
 		{Press{Rune: 's', Ctrl: true}, ActSend},
+		{Press{Rune: 'r', Ctrl: true}, ActRefresh},
 	}
 	for _, c := range cases {
 		var b Binder

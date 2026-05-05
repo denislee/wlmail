@@ -100,7 +100,7 @@ Wayland compositor (sway, Hyprland, GNOME, KDE Plasma 5.24+).
 | `u` / `U`      | mark unread / read           |
 | `c`            | compose                      |
 | `r` / `a` / `f`| reply / reply-all / forward  |
-| `R`            | refresh current folder       |
+| `R`, `Ctrl-r`  | refresh current folder       |
 | `/`            | start search (Enter to run)  |
 | `n` / `N`      | next / prev match            |
 | `gi gs gt gT`  | inbox / starred / sent / trash |

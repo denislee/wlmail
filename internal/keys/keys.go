@@ -170,6 +170,7 @@ var normalBindings = map[string]Action{
 	"n":       ActNextMatch,
 	"N":       ActPrevMatch,
 	"R":       ActRefresh,
+	"<C-r>":   ActRefresh,
 	"q":       ActQuit,
 	"?":       ActHelp,
 	"gi":      ActGotoInbox,
