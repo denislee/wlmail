@@ -110,7 +110,22 @@ func (a *App) layoutHeader(gtx layout.Context) layout.Dimensions {
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 						lbl := material.Label(a.th.Theme, unit.Sp(13), strings.ToLower(title))
 						lbl.Color = a.th.Pal.TextStrong
-						return lbl.Layout(gtx)
+						
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(lbl.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if !a.loading {
+									return layout.Dimensions{}
+								}
+								gtx.Constraints.Min = image.Pt(gtx.Dp(unit.Dp(16)), gtx.Dp(unit.Dp(16)))
+								gtx.Constraints.Max = gtx.Constraints.Min
+								return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									loader := material.Loader(a.th.Theme)
+									loader.Color = a.th.Pal.Accent
+									return loader.Layout(gtx)
+								})
+							}),
+						)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						if a.email == "" {

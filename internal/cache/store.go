@@ -23,11 +23,13 @@ func (c *Cache) List(ctx context.Context, q string, max int64) ([]mail.Summary, 
 	if err != nil {
 		return nil, err
 	}
-	if len(cached) == 0 {
-		// Empty cache for this folder — fetch synchronously so the user
-		// sees something on first run.
+	// If the cache has fewer items than requested, we need to fetch more
+	// synchronously so the UI can actually show them.
+	if len(cached) < int(max) {
 		return c.fetchAndStore(ctx, q, max)
 	}
+	// If we have enough in cache, still kick off a background refresh
+	// for the first page to keep things fresh.
 	go func() {
 		// Best-effort background refresh.
 		bg, cancel := context.WithCancel(context.Background())
@@ -78,10 +80,15 @@ func (c *Cache) fetchAndStore(ctx context.Context, q string, max int64) ([]mail.
 
 // mergeWithStored unions newLabels with whatever was already persisted,
 // preserving folder labels (INBOX/SENT/...) that List() wouldn't otherwise
-// give us.
+// give us, but updating state labels (UNREAD/STARRED).
 func mergeWithStored(c *Cache, ctx context.Context, id string, newLabels []string) []string {
 	existing, _ := c.storedLabels(ctx, id)
-	merged := append([]string(nil), existing...)
+	var merged []string
+	for _, l := range existing {
+		if l != mail.LabelUnread && l != mail.LabelStarred {
+			merged = append(merged, l)
+		}
+	}
 	for _, l := range newLabels {
 		merged = addLabel(merged, l)
 	}
@@ -103,7 +110,7 @@ func (c *Cache) Get(ctx context.Context, id string) (*mail.Message, error) {
 		return nil, err
 	}
 	labels := derivedLabels(fresh)
-	_ = c.upsertFull(ctx, fresh, labels)
+	_ = c.upsertFull(ctx, fresh, mergeWithStored(c, ctx, fresh.ID, labels))
 	return fresh, nil
 }
 

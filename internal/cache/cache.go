@@ -215,7 +215,10 @@ func (c *Cache) getCached(ctx context.Context, id string) (*mail.Message, bool, 
 	}
 
 	if strings.HasPrefix(bodyJ, "[") {
-		_ = json.Unmarshal([]byte(bodyJ), &m.Body)
+		if err := json.Unmarshal([]byte(bodyJ), &m.Body); err != nil {
+			m.Plain = bodyJ
+			m.Body = mail.ParseMarkdown(bodyJ)
+		}
 	} else {
 		m.Plain = bodyJ
 		m.Body = mail.ParseMarkdown(bodyJ)

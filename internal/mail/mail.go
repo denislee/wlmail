@@ -71,18 +71,69 @@ func New(ctx context.Context, httpClient *http.Client) (*Client, error) {
 
 // List returns up to max message summaries matching the given Gmail query.
 func (c *Client) List(ctx context.Context, query string, max int64) ([]Summary, error) {
-	call := c.svc.Users.Messages.List(c.user).Q(query).MaxResults(max).Context(ctx)
-	resp, err := call.Do()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Summary, 0, len(resp.Messages))
-	for _, m := range resp.Messages {
-		s, err := c.summary(ctx, m.Id)
-		if err != nil {
-			continue
+	var allMessages []*gmail.Message
+	pageToken := ""
+
+	for {
+		req := c.svc.Users.Messages.List(c.user).Q(query).Context(ctx)
+		rem := max - int64(len(allMessages))
+		if rem > 500 {
+			req = req.MaxResults(500)
+		} else if rem > 0 {
+			req = req.MaxResults(rem)
 		}
-		out = append(out, s)
+
+		if pageToken != "" {
+			req = req.PageToken(pageToken)
+		}
+
+		resp, err := req.Do()
+		if err != nil {
+			return nil, err
+		}
+
+		allMessages = append(allMessages, resp.Messages...)
+		pageToken = resp.NextPageToken
+
+		if pageToken == "" || int64(len(allMessages)) >= max {
+			break
+		}
+	}
+
+	if int64(len(allMessages)) > max {
+		allMessages = allMessages[:max]
+	}
+
+	type result struct {
+		idx int
+		s   Summary
+		err error
+	}
+	resChan := make(chan result, len(allMessages))
+	sem := make(chan struct{}, 10) // limit concurrency
+
+	for i, m := range allMessages {
+		go func(i int, id string) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			s, err := c.summary(ctx, id)
+			resChan <- result{i, s, err}
+		}(i, m.Id)
+	}
+
+	resMap := make(map[int]Summary)
+	for i := 0; i < len(allMessages); i++ {
+		res := <-resChan
+		if res.err == nil {
+			resMap[res.idx] = res.s
+		}
+	}
+
+	out := make([]Summary, 0, len(resMap))
+	for i := 0; i < len(allMessages); i++ {
+		if s, ok := resMap[i]; ok {
+			out = append(out, s)
+		}
 	}
 	return out, nil
 }
@@ -177,6 +228,14 @@ func (rb RichBody) String() string {
 	return b.String()
 }
 
+func decodeBase64(s string) ([]byte, error) {
+	data, err := base64.URLEncoding.DecodeString(s)
+	if err == nil {
+		return data, nil
+	}
+	return base64.RawURLEncoding.DecodeString(s)
+}
+
 func extractBody(p *gmail.MessagePart) (RichBody, string) {
 	if p == nil {
 		return nil, ""
@@ -187,7 +246,7 @@ func extractBody(p *gmail.MessagePart) (RichBody, string) {
 	walk = func(parts []*gmail.MessagePart) {
 		for _, sub := range parts {
 			if sub.Body != nil && sub.Body.Data != "" {
-				data, err := base64.URLEncoding.DecodeString(sub.Body.Data)
+				data, err := decodeBase64(sub.Body.Data)
 				if err != nil {
 					continue
 				}
@@ -205,7 +264,7 @@ func extractBody(p *gmail.MessagePart) (RichBody, string) {
 	walk(p.Parts)
 	// If the top-level part itself has data, check its type.
 	if plain == "" && htmlContent == "" && p.Body != nil && p.Body.Data != "" {
-		data, _ := base64.URLEncoding.DecodeString(p.Body.Data)
+		data, _ := decodeBase64(p.Body.Data)
 		if strings.HasPrefix(p.MimeType, "text/plain") {
 			plain = string(data)
 		} else if strings.HasPrefix(p.MimeType, "text/html") {

@@ -120,6 +120,7 @@ type App struct {
 	linkScroll int
 	status    string
 	loading   bool
+	listMax   int64
 	searchQ   string
 
 	imgCache map[string]paint.ImageOp
@@ -200,6 +201,7 @@ func Run(ctx context.Context, cfg Config) error {
 		switchTo:     cfg.SwitchTo,
 		listAccounts: cfg.ListAccounts,
 		settings:     settings,
+		listMax:      50,
 		imgCache:     make(map[string]paint.ImageOp),
 	}
 
@@ -245,7 +247,14 @@ func Run(ctx context.Context, cfg Config) error {
 
 	a.status = "wlmail — press ? for help"
 
-	go a.refresh(ctx)
+	go func() {
+		a.refresh(ctx)
+		a.mu.Lock()
+		if len(a.items) > 0 {
+			a.openCurrent(ctx)
+		}
+		a.mu.Unlock()
+	}()
 	return a.loop(ctx)
 }
 
@@ -468,6 +477,10 @@ func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
 	}
 
 	p := pressFromEvent(ke)
+	if a.view == viewAccounts && p.Rune == 'h' && !p.Ctrl {
+		a.mu.Unlock()
+		return
+	}
 	act := a.binder.Resolve(keys.ModeNormal, p)
 	if pend := a.binder.Pending(); pend != "" {
 		a.status = pend
@@ -550,6 +563,7 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 					a.openCurrent(ctx)
 				}
 			}
+			a.checkLoadMore(ctx)
 		} else {
 			a.messageList.Position.Offset += 50
 		}
@@ -572,6 +586,7 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 			if a.moveCursor(10) {
 				a.openCurrent(ctx)
 			}
+			a.checkLoadMore(ctx)
 		} else {
 			a.messageList.Position.Offset += 500
 		}
@@ -611,6 +626,7 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 				a.cursor = 0
 			}
 			a.openCurrent(ctx)
+			a.checkLoadMore(ctx)
 		} else {
 			// rough approximation
 			a.messageList.Position.First = 1000
@@ -681,15 +697,19 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 		go a.refresh(ctx)
 	case keys.ActGotoInbox:
 		a.folderIdx = 0
+		a.listMax = 50
 		go a.refresh(ctx)
 	case keys.ActGotoStarred:
 		a.folderIdx = 1
+		a.listMax = 50
 		go a.refresh(ctx)
 	case keys.ActGotoSent:
 		a.folderIdx = 2
+		a.listMax = 50
 		go a.refresh(ctx)
 	case keys.ActGotoTrash:
 		a.folderIdx = 3
+		a.listMax = 50
 		go a.refresh(ctx)
 	case keys.ActSend:
 		a.sendCompose(ctx)
@@ -720,6 +740,19 @@ func (a *App) moveCursor(d int) bool {
 		a.cursor = max - 1
 	}
 	return a.cursor != old
+}
+
+func (a *App) checkLoadMore(ctx context.Context) {
+	if a.view != viewList && a.view != viewMessage {
+		return
+	}
+	if a.loading || len(a.items) == 0 {
+		return
+	}
+	if a.cursor >= len(a.items)-5 && int64(len(a.items)) >= a.listMax {
+		a.listMax += 50
+		go a.refresh(ctx)
+	}
 }
 
 func (a *App) moveLinkCursor(d int) {
@@ -827,11 +860,18 @@ func (a *App) switchToAccount(ctx context.Context, email string) {
 	a.items = nil
 	a.cursor = 0
 	a.scroll = 0
+	a.listMax = 50
 	a.searchQ = ""
 	a.view = viewList
 	a.status = "switched to " + email
 	a.mu.Unlock()
 	a.refresh(ctx)
+
+	a.mu.Lock()
+	if len(a.items) > 0 {
+		a.openCurrent(ctx)
+	}
+	a.mu.Unlock()
 }
 
 func (a *App) refresh(ctx context.Context) {
@@ -849,7 +889,11 @@ func (a *App) refresh(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	items, err := a.client.List(cctx, q, 50)
+	a.mu.Lock()
+	maxItems := a.listMax
+	a.mu.Unlock()
+
+	items, err := a.client.List(cctx, q, maxItems)
 
 	a.mu.Lock()
 	a.loading = false
@@ -982,6 +1026,7 @@ func (a *App) runSearch(ctx context.Context) {
 	a.mu.Lock()
 	q := strings.TrimSpace(a.searchBuf.Text())
 	a.searchQ = q
+	a.listMax = 50
 	a.focus = paneList
 	a.mode = keys.ModeNormal
 	a.mu.Unlock()
