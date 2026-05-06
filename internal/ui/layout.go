@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"gioui.org/font"
+	"gioui.org/io/event"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
@@ -51,12 +53,60 @@ func (a *App) layout(gtx layout.Context) {
 }
 
 func (a *App) layoutSplit(gtx layout.Context) layout.Dimensions {
-	leftWeight := float32(0.35)
-	rightWeight := float32(0.65)
 	if a.focus == paneMessage {
-		leftWeight = 0.20
-		rightWeight = 0.80
+		a.th.SetDarkMode(a.settings.DarkModeRight)
+		return paintedBg(gtx, a.th.Pal.Bg, func(gtx layout.Context) layout.Dimensions {
+			return a.layoutMessage(gtx)
+		})
 	}
+
+	totalWidth := float32(gtx.Constraints.Max.X)
+	barWidth := gtx.Dp(unit.Dp(6))
+	leftWidth := a.settings.SplitRatio * totalWidth
+
+	// Handle resize dragging at the split container level for stable coordinates
+	area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
+	event.Op(gtx.Ops, &a.splitDrag)
+
+	for {
+		ev, ok := gtx.Source.Event(pointer.Filter{
+			Target: &a.splitDrag,
+			Kinds:  pointer.Press | pointer.Drag | pointer.Release,
+		})
+		if !ok {
+			break
+		}
+		e, ok := ev.(pointer.Event)
+		if !ok {
+			continue
+		}
+		switch e.Kind {
+		case pointer.Press:
+			if e.Position.X >= leftWidth && e.Position.X <= leftWidth+float32(barWidth) {
+				a.splitDrag = true
+				a.splitDragX = e.Position.X
+			}
+		case pointer.Drag:
+			if a.splitDrag {
+				deltaX := e.Position.X - a.splitDragX
+				a.splitDragX = e.Position.X
+				a.settings.SplitRatio += deltaX / totalWidth
+				if a.settings.SplitRatio < 0.1 {
+					a.settings.SplitRatio = 0.1
+				}
+				if a.settings.SplitRatio > 0.9 {
+					a.settings.SplitRatio = 0.9
+				}
+			}
+		case pointer.Release:
+			a.splitDrag = false
+			_ = a.saveSettings()
+		}
+	}
+	area.Pop()
+
+	leftWeight := a.settings.SplitRatio
+	rightWeight := 1.0 - leftWeight
 
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		layout.Flexed(leftWeight, func(gtx layout.Context) layout.Dimensions {
@@ -68,8 +118,19 @@ func (a *App) layoutSplit(gtx layout.Context) layout.Dimensions {
 			})
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			sz := image.Pt(gtx.Dp(unit.Dp(1)), gtx.Constraints.Max.Y)
-			paint.FillShape(gtx.Ops, a.th.Pal.Border, clip.Rect{Max: sz}.Op())
+			sz := image.Pt(barWidth, gtx.Constraints.Max.Y)
+			// Draw the visible line in the center of the grab area
+			lineW := max(gtx.Dp(unit.Dp(1)), 1)
+			paint.FillShape(gtx.Ops, a.th.Pal.Border, clip.Rect{
+				Min: image.Pt((sz.X-lineW)/2, 0),
+				Max: image.Pt((sz.X+lineW)/2, sz.Y),
+			}.Op())
+
+			// Show resize cursor when hovering over the bar
+			area := clip.Rect{Max: sz}.Push(gtx.Ops)
+			pointer.CursorColResize.Add(gtx.Ops)
+			area.Pop()
+
 			return layout.Dimensions{Size: sz}
 		}),
 		layout.Flexed(rightWeight, func(gtx layout.Context) layout.Dimensions {

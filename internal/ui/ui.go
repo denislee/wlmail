@@ -61,6 +61,7 @@ type Settings struct {
 	RenderImages   bool
 	DarkModeLeft   bool
 	DarkModeRight  bool
+	SplitRatio     float32
 }
 
 type folder struct {
@@ -141,6 +142,9 @@ type App struct {
 
 	settings Settings
 	settingsScreen *SettingsScreen
+
+	splitDrag  bool
+	splitDragX float32
 }
 
 func (a *App) saveSettings() error {
@@ -168,6 +172,7 @@ func loadSettings() Settings {
 		RenderImages:  true,
 		DarkModeLeft:  true,
 		DarkModeRight: true,
+		SplitRatio:    0.35,
 	}
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -178,6 +183,9 @@ func loadSettings() Settings {
 		return s
 	}
 	_ = json.Unmarshal(b, &s)
+	if s.SplitRatio <= 0 {
+		s.SplitRatio = 0.35
+	}
 	return s
 }
 
