@@ -777,6 +777,7 @@ func (a *App) moveLinkCursor(d int) {
 
 func (a *App) openLinksDialog() {
 	var links []linkItem
+	seen := make(map[string]int)
 	for _, s := range a.message.Body {
 		if s.URL != "" {
 			text := strings.TrimSpace(s.Text)
@@ -784,7 +785,18 @@ func (a *App) openLinksDialog() {
 			if text == "" {
 				text = "(no text)"
 			}
-			links = append(links, linkItem{text: text, url: s.URL})
+			if idx, ok := seen[s.URL]; ok {
+				if text != "(no text)" && !strings.Contains(links[idx].text, text) {
+					if links[idx].text == "(no text)" {
+						links[idx].text = text
+					} else {
+						links[idx].text += ", " + text
+					}
+				}
+			} else {
+				seen[s.URL] = len(links)
+				links = append(links, linkItem{text: text, url: s.URL})
+			}
 		}
 	}
 	if len(links) == 0 {

@@ -289,27 +289,31 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 			if s.Unread {
 				fromColor = a.th.Pal.TextStrong
 			}
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(a.coloredText(star, a.th.Pal.Star, a.th.Fonts.List)),
-				layout.Rigid(a.coloredText(flag, a.th.Pal.Unread, a.th.Fonts.List)),
+			return layout.Flex{Axis: layout.Vertical, Spacing: layout.SpaceAround}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					gtx.Constraints.Min.X = gtx.Dp(unit.Dp(100))
-					gtx.Constraints.Max.X = gtx.Dp(unit.Dp(100))
-					return a.coloredText(from, fromColor, a.th.Fonts.List)(gtx)
-				}),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.th.Theme, unit.Sp(fontSize), subj)
-					lbl.Color = a.th.Pal.Text
-					a.th.applyFont(&lbl, a.th.Fonts.List)
-					if s.Unread {
-						lbl.Font.Weight = font.Bold
-					}
-					lbl.MaxLines = 1
-					lbl.Truncator = "…"
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.coloredText(age, a.th.Pal.TextDim, a.th.Fonts.List))
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(a.coloredText(star, a.th.Pal.Star, a.th.Fonts.List)),
+						layout.Rigid(a.coloredText(flag, a.th.Pal.Unread, a.th.Fonts.List)),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							gtx.Constraints.Min.X = gtx.Dp(unit.Dp(100))
+							gtx.Constraints.Max.X = gtx.Dp(unit.Dp(100))
+							return a.coloredText(from, fromColor, a.th.Fonts.List)(gtx)
+						}),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.th.Theme, unit.Sp(fontSize), subj)
+							lbl.Color = a.th.Pal.Text
+							a.th.applyFont(&lbl, a.th.Fonts.List)
+							if s.Unread {
+								lbl.Font.Weight = font.Bold
+							}
+							lbl.MaxLines = 1
+							lbl.Truncator = "…"
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.coloredText(age, a.th.Pal.TextDim, a.th.Fonts.List))
+						}),
+					)
 				}),
 			)
 		})
@@ -395,16 +399,20 @@ func (a *App) layoutAccountRow(gtx layout.Context, idx int, email string) layout
 		func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min.Y = rowH
 			gtx.Constraints.Max.Y = rowH
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(a.coloredText(indicator, a.th.Pal.Accent, a.th.Fonts.List)),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.th.Theme, unit.Sp(fontSize+1), email)
-					lbl.Color = a.th.Pal.Text
-					a.th.applyFont(&lbl, a.th.Fonts.List)
-					if email == a.email {
-						lbl.Font.Weight = font.Bold
-					}
-					return lbl.Layout(gtx)
+			return layout.Flex{Axis: layout.Vertical, Spacing: layout.SpaceAround}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(a.coloredText(indicator, a.th.Pal.Accent, a.th.Fonts.List)),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.th.Theme, unit.Sp(fontSize+1), email)
+							lbl.Color = a.th.Pal.Text
+							a.th.applyFont(&lbl, a.th.Fonts.List)
+							if email == a.email {
+								lbl.Font.Weight = font.Bold
+							}
+							return lbl.Layout(gtx)
+						}),
+					)
 				}),
 			)
 		})
@@ -485,20 +493,24 @@ func (a *App) layoutLinkRow(gtx layout.Context, idx int, link linkItem) layout.D
 		func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min.Y = rowH - gtx.Dp(unit.Dp(8))
 			gtx.Constraints.Max.Y = rowH - gtx.Dp(unit.Dp(8))
-			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
+			return layout.Flex{Axis: layout.Vertical, Spacing: layout.SpaceAround}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.th.Theme, unit.Sp(fontSize), truncate(link.text, 80))
-					lbl.Color = a.th.Pal.TextStrong
-					a.th.applyFont(&lbl, a.th.Fonts.List)
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.th.Theme, unit.Sp(fontSize), link.url)
-					lbl.Color = a.th.Pal.Link
-					a.th.applyFont(&lbl, a.th.Fonts.List)
-					lbl.MaxLines = 1
-					lbl.Truncator = "…"
-					return lbl.Layout(gtx)
+					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.th.Theme, unit.Sp(fontSize), truncate(link.text, 80))
+							lbl.Color = a.th.Pal.TextStrong
+							a.th.applyFont(&lbl, a.th.Fonts.List)
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.th.Theme, unit.Sp(fontSize), link.url)
+							lbl.Color = a.th.Pal.Link
+							a.th.applyFont(&lbl, a.th.Fonts.List)
+							lbl.MaxLines = 1
+							lbl.Truncator = "…"
+							return lbl.Layout(gtx)
+						}),
+					)
 				}),
 			)
 		})
