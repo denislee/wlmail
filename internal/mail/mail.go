@@ -69,14 +69,14 @@ func New(ctx context.Context, httpClient *http.Client) (*Client, error) {
 	return &Client{svc: svc, user: "me"}, nil
 }
 
-// List returns up to max message summaries matching the given Gmail query.
-func (c *Client) List(ctx context.Context, query string, max int64) ([]Summary, error) {
-	var allMessages []*gmail.Message
+// ListIDs returns up to max message IDs matching the given Gmail query.
+func (c *Client) ListIDs(ctx context.Context, query string, max int64) ([]string, error) {
+	var allIDs []string
 	pageToken := ""
 
 	for {
 		req := c.svc.Users.Messages.List(c.user).Q(query).Context(ctx)
-		rem := max - int64(len(allMessages))
+		rem := max - int64(len(allIDs))
 		if rem > 500 {
 			req = req.MaxResults(500)
 		} else if rem > 0 {
@@ -92,37 +92,43 @@ func (c *Client) List(ctx context.Context, query string, max int64) ([]Summary, 
 			return nil, err
 		}
 
-		allMessages = append(allMessages, resp.Messages...)
+		for _, m := range resp.Messages {
+			allIDs = append(allIDs, m.Id)
+		}
 		pageToken = resp.NextPageToken
 
-		if pageToken == "" || int64(len(allMessages)) >= max {
+		if pageToken == "" || int64(len(allIDs)) >= max {
 			break
 		}
 	}
 
-	if int64(len(allMessages)) > max {
-		allMessages = allMessages[:max]
+	if int64(len(allIDs)) > max {
+		allIDs = allIDs[:max]
 	}
+	return allIDs, nil
+}
 
+// GetSummaries fetches the summaries for the given list of message IDs concurrently.
+func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, error) {
 	type result struct {
 		idx int
 		s   Summary
 		err error
 	}
-	resChan := make(chan result, len(allMessages))
+	resChan := make(chan result, len(ids))
 	sem := make(chan struct{}, 10) // limit concurrency
 
-	for i, m := range allMessages {
+	for i, id := range ids {
 		go func(i int, id string) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			s, err := c.summary(ctx, id)
 			resChan <- result{i, s, err}
-		}(i, m.Id)
+		}(i, id)
 	}
 
 	resMap := make(map[int]Summary)
-	for i := 0; i < len(allMessages); i++ {
+	for i := 0; i < len(ids); i++ {
 		res := <-resChan
 		if res.err == nil {
 			resMap[res.idx] = res.s
@@ -130,7 +136,7 @@ func (c *Client) List(ctx context.Context, query string, max int64) ([]Summary, 
 	}
 
 	out := make([]Summary, 0, len(resMap))
-	for i := 0; i < len(allMessages); i++ {
+	for i := 0; i < len(ids); i++ {
 		if s, ok := resMap[i]; ok {
 			out = append(out, s)
 		}

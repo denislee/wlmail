@@ -40,9 +40,52 @@ func (c *Cache) List(ctx context.Context, q string, max int64) ([]mail.Summary, 
 }
 
 func (c *Cache) fetchAndStore(ctx context.Context, q string, max int64) ([]mail.Summary, error) {
-	items, err := c.api.List(ctx, q, max)
+	ids, err := c.api.ListIDs(ctx, q, max)
 	if err != nil {
 		return nil, err
+	}
+
+	var missingIDs []string
+	cachedMap := make(map[string]mail.Summary)
+
+	for _, id := range ids {
+		s, err := c.getSummary(ctx, id)
+		if err == nil && s.ID != "" {
+			cachedMap[id] = s
+		} else {
+			missingIDs = append(missingIDs, id)
+		}
+	}
+
+	var newItems []mail.Summary
+	if len(missingIDs) > 0 {
+		newItems, err = c.api.GetSummaries(ctx, missingIDs)
+		if err != nil {
+			return nil, err
+		}
+
+		folderLabel := labelForFolderQuery(q)
+		for _, s := range newItems {
+			labels := []string{}
+			if folderLabel != "" {
+				labels = append(labels, folderLabel)
+			}
+			if s.Unread {
+				labels = append(labels, mail.LabelUnread)
+			}
+			if s.Starred {
+				labels = append(labels, mail.LabelStarred)
+			}
+			_ = c.upsertSummary(ctx, s, mergeWithStored(c, ctx, s.ID, labels))
+			cachedMap[s.ID] = s
+		}
+	}
+
+	var items []mail.Summary
+	for _, id := range ids {
+		if s, ok := cachedMap[id]; ok {
+			items = append(items, s)
+		}
 	}
 
 	slices.SortFunc(items, func(a, b mail.Summary) int {
@@ -61,20 +104,6 @@ func (c *Cache) fetchAndStore(ctx context.Context, q string, max int64) ([]mail.
 		return 0
 	})
 
-	folderLabel := labelForFolderQuery(q) // "" for arbitrary searches
-	for _, s := range items {
-		labels := []string{}
-		if folderLabel != "" {
-			labels = append(labels, folderLabel)
-		}
-		if s.Unread {
-			labels = append(labels, mail.LabelUnread)
-		}
-		if s.Starred {
-			labels = append(labels, mail.LabelStarred)
-		}
-		_ = c.upsertSummary(ctx, s, mergeWithStored(c, ctx, s.ID, labels))
-	}
 	return items, nil
 }
 

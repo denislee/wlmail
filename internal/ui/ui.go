@@ -1190,7 +1190,8 @@ func (a *App) loadImage(url string) {
 	a.imgMu.Unlock()
 
 	go func() {
-		resp, err := http.Get(url)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(url)
 		if err != nil {
 			return
 		}

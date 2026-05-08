@@ -65,6 +65,12 @@ func (c *Cache) upsertSummary(ctx context.Context, s mail.Summary, labels []stri
 }
 
 func (c *Cache) upsertFull(ctx context.Context, m *mail.Message, labels []string) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	labelsJSON, _ := json.Marshal(labels)
 	var bodyText string
 	if m.Plain != "" {
@@ -73,7 +79,7 @@ func (c *Cache) upsertFull(ctx context.Context, m *mail.Message, labels []string
 		bj, _ := json.Marshal(m.Body)
 		bodyText = string(bj)
 	}
-	_, err := c.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO messages
 			(id, thread_id, from_addr, to_addr, cc_addr, subject, snippet, body,
 			 date_unix, labels, has_full, fetched_at, message_id, references_)
@@ -97,7 +103,19 @@ func (c *Cache) upsertFull(ctx context.Context, m *mail.Message, labels []string
 		m.Date.UnixMilli(), string(labelsJSON), time.Now().Unix(),
 		m.Headers["Message-ID"], m.Headers["References"],
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM message_labels WHERE message_id = ?`, m.ID); err != nil {
+		return err
+	}
+	for _, l := range labels {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO message_labels (message_id, label) VALUES (?, ?)`, m.ID, l); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (c *Cache) deleteMessage(ctx context.Context, id string) error {
@@ -161,10 +179,11 @@ func labelForFolderQuery(q string) string {
 
 func (c *Cache) listByLabel(ctx context.Context, label string, max int) ([]mail.Summary, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, thread_id, from_addr, subject, snippet, date_unix, labels
-		FROM messages
-		WHERE EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?)
-		ORDER BY (EXISTS (SELECT 1 FROM json_each(labels) WHERE value = 'UNREAD')) DESC, date_unix DESC
+		SELECT m.id, m.thread_id, m.from_addr, m.subject, m.snippet, m.date_unix, m.labels
+		FROM messages m
+		JOIN message_labels l ON m.id = l.message_id
+		WHERE l.label = ?
+		ORDER BY (EXISTS (SELECT 1 FROM json_each(m.labels) WHERE value = 'UNREAD')) DESC, m.date_unix DESC
 		LIMIT ?`, label, max)
 	if err != nil {
 		return nil, err
@@ -189,6 +208,26 @@ func (c *Cache) listByLabel(ctx context.Context, label string, max int) ([]mail.
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+func (c *Cache) getSummary(ctx context.Context, id string) (mail.Summary, error) {
+	row := c.db.QueryRowContext(ctx, `
+		SELECT thread_id, from_addr, subject, snippet, date_unix, labels
+		FROM messages WHERE id = ?`, id)
+	var s mail.Summary
+	var ms int64
+	var lblJ string
+	err := row.Scan(&s.ThreadID, &s.From, &s.Subject, &s.Snippet, &ms, &lblJ)
+	if err != nil {
+		return s, err
+	}
+	s.ID = id
+	s.Date = time.UnixMilli(ms)
+	var labels []string
+	_ = json.Unmarshal([]byte(lblJ), &labels)
+	s.Unread = slices.Contains(labels, mail.LabelUnread)
+	s.Starred = slices.Contains(labels, mail.LabelStarred)
+	return s, nil
 }
 
 func (c *Cache) getCached(ctx context.Context, id string) (*mail.Message, bool, error) {

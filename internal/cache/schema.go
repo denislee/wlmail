@@ -21,6 +21,15 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_date_idx ON messages(date_unix DESC);
 CREATE INDEX IF NOT EXISTS messages_thread_idx ON messages(thread_id);
 
+CREATE TABLE IF NOT EXISTS message_labels (
+    message_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    PRIMARY KEY (message_id, label),
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS message_labels_label_idx ON message_labels(label);
+
 CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
