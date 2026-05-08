@@ -761,7 +761,8 @@ Navigation
   gg / G         top / bottom
   Ctrl-d/u       page down / up
   Enter / l      open message
-  h / Esc        back / accounts (from list)
+  h              back / accounts (from list)
+  Esc            back (from message / help / settings)
 
 Actions
   e              archive

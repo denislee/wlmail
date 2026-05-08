@@ -240,6 +240,15 @@ func loadSystemFaces() []font.FontFace {
 		"/usr/share/fonts/ibm-plex/IBMPlexSans-Regular.otf",
 		"/usr/share/fonts/ibm-plex/IBMPlexSans-Bold.otf",
 		"/usr/share/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf",
+		"/usr/share/fonts/TTF/JetBrainsMonoNLNerdFont-Regular.ttf",
+		"/usr/share/fonts/TTF/JetBrainsMonoNLNerdFont-Bold.ttf",
+		"/usr/share/fonts/TTF/DejaVuSans.ttf",
+		"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+		"/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+		"/usr/share/fonts/TTF/DejaVuSerif.ttf",
+		"/usr/share/fonts/TTF/NanumGothic.ttf",
+		"/usr/share/fonts/TTF/NanumGothicBold.ttf",
 	}
 	var out []font.FontFace
 	for _, p := range candidates {

@@ -491,6 +491,11 @@ func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
 		return
 	}
 
+	if isEscape(ke) && (a.view == viewList || a.view == viewMessage) && a.focus == paneList {
+		a.mu.Unlock()
+		return
+	}
+
 	p := pressFromEvent(ke)
 	if a.view == viewAccounts && p.Rune == 'h' && !p.Ctrl {
 		a.mu.Unlock()
@@ -698,11 +703,17 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 	case keys.ActCompose:
 		a.startCompose("", "", "", "", "")
 	case keys.ActReply:
-		a.startReply(false)
+		if a.focus == paneMessage {
+			a.startReply(false)
+		}
 	case keys.ActReplyAll:
-		a.startReply(true)
+		if a.focus == paneMessage {
+			a.startReply(true)
+		}
 	case keys.ActForward:
-		a.startForward()
+		if a.focus == paneMessage {
+			a.startForward()
+		}
 	case keys.ActSearch:
 		a.mode = keys.ModeSearch
 		a.searchBuf.SetText("")
