@@ -279,7 +279,7 @@ func (a *App) layoutList(gtx layout.Context) layout.Dimensions {
 	if fontSize == 0 {
 		fontSize = float32(a.th.TextSize)
 	}
-	rowH := gtx.Dp(unit.Dp(fontSize * 1.8))
+	rowH := gtx.Dp(unit.Dp(fontSize * 2.1))
 	visible := gtx.Constraints.Max.Y / rowH
 	if visible <= 0 {
 		visible = 1
@@ -323,7 +323,7 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 	if fontSize == 0 {
 		fontSize = float32(a.th.TextSize)
 	}
-	rowH := gtx.Dp(unit.Dp(fontSize * 1.8))
+	rowH := gtx.Dp(unit.Dp(fontSize * 2.1))
 	macro := image.Pt(gtx.Constraints.Max.X, rowH)
 	if idx == cursor {
 		paint.FillShape(gtx.Ops, a.th.Pal.BgRowSelected, clip.Rect{Max: macro}.Op())
@@ -393,7 +393,7 @@ func (a *App) layoutAccounts(gtx layout.Context) layout.Dimensions {
 	if fontSize == 0 {
 		fontSize = float32(a.th.TextSize)
 	}
-	rowH := gtx.Dp(unit.Dp(fontSize * 1.8))
+	rowH := gtx.Dp(unit.Dp(fontSize * 2.1))
 	visible := gtx.Constraints.Max.Y / rowH
 	if visible <= 0 {
 		visible = 1
@@ -444,7 +444,7 @@ func (a *App) layoutAccountRow(gtx layout.Context, idx int, email string) layout
 	if fontSize == 0 {
 		fontSize = float32(a.th.TextSize)
 	}
-	rowH := gtx.Dp(unit.Dp(fontSize * 1.8))
+	rowH := gtx.Dp(unit.Dp(fontSize * 2.1))
 	macro := image.Pt(gtx.Constraints.Max.X, rowH)
 	if idx == a.cursor {
 		paint.FillShape(gtx.Ops, a.th.Pal.BgRowSelected, clip.Rect{Max: macro}.Op())
