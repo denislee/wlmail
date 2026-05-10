@@ -14,6 +14,7 @@ func TestSimpleBindings(t *testing.T) {
 		{Press{Rune: 'd', Ctrl: true}, ActPageDown},
 		{Press{Rune: 's', Ctrl: true}, ActSend},
 		{Press{Rune: 'r', Ctrl: true}, ActRefresh},
+		{Press{Rune: 'y'}, ActYank},
 	}
 	for _, c := range cases {
 		var b Binder

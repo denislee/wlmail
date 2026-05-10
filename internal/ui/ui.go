@@ -9,6 +9,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"gioui.org/app"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/system"
@@ -145,6 +147,8 @@ type App struct {
 
 	splitDrag  bool
 	splitDragX float32
+
+	yankURL string
 }
 
 func (a *App) saveSettings() error {
@@ -274,6 +278,16 @@ func (a *App) loop(ctx context.Context) error {
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
+			a.mu.Lock()
+			if a.yankURL != "" {
+				gtx.Execute(clipboard.WriteCmd{
+					Type: "text/plain",
+					Data: io.NopCloser(strings.NewReader(a.yankURL)),
+				})
+				a.status = "copied to clipboard: " + a.yankURL
+				a.yankURL = ""
+			}
+			a.mu.Unlock()
 			a.handleKeys(ctx, gtx)
 			a.layout(gtx)
 			if a.searchTriggered {
@@ -698,6 +712,13 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 		a.toggleStar(ctx)
 	case keys.ActMarkRead:
 		a.markRead(ctx, true)
+	case keys.ActYank:
+		if a.view == viewLinks {
+			if a.linkCursor >= 0 && a.linkCursor < len(a.links) {
+				a.yankURL = a.links[a.linkCursor].url
+				a.win.Invalidate()
+			}
+		}
 	case keys.ActMarkUnread:
 		a.markRead(ctx, false)
 	case keys.ActCompose:
@@ -826,7 +847,7 @@ func (a *App) openLinksDialog() {
 	a.linkCursor = 0
 	a.linkScroll = 0
 	a.view = viewLinks
-	a.status = "select a link to open in browser"
+	a.status = "select a link to open (Enter) or copy (y)"
 	a.win.Invalidate()
 }
 

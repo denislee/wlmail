@@ -394,24 +394,6 @@ func (a *App) layoutAccounts(gtx layout.Context) layout.Dimensions {
 		fontSize = float32(a.th.TextSize)
 	}
 	rowH := gtx.Dp(unit.Dp(fontSize * 2.1))
-	visible := gtx.Constraints.Max.Y / rowH
-	if visible <= 0 {
-		visible = 1
-	}
-	if a.cursor < a.scroll {
-		a.scroll = a.cursor
-	}
-	if a.cursor >= a.scroll+visible {
-		a.scroll = a.cursor - visible + 1
-	}
-	if a.scroll < 0 {
-		a.scroll = 0
-	}
-
-	end := a.scroll + visible
-	if end > len(a.accounts) {
-		end = len(a.accounts)
-	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -423,6 +405,25 @@ func (a *App) layoutAccounts(gtx layout.Context) layout.Dimensions {
 			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			visible := gtx.Constraints.Max.Y / rowH
+			if visible <= 0 {
+				visible = 1
+			}
+			if a.cursor < a.scroll {
+				a.scroll = a.cursor
+			}
+			if a.cursor >= a.scroll+visible {
+				a.scroll = a.cursor - visible + 1
+			}
+			if a.scroll < 0 {
+				a.scroll = 0
+			}
+
+			end := a.scroll + visible
+			if end > len(a.accounts) {
+				end = len(a.accounts)
+			}
+
 			var children []layout.FlexChild
 			for i := a.scroll; i < end; i++ {
 				idx := i
@@ -492,24 +493,6 @@ func (a *App) layoutLinks(gtx layout.Context) layout.Dimensions {
 		fontSize = float32(a.th.TextSize)
 	}
 	rowH := gtx.Dp(unit.Dp(fontSize * 3.6))
-	visible := gtx.Constraints.Max.Y / rowH
-	if visible <= 0 {
-		visible = 1
-	}
-	if a.linkCursor < a.linkScroll {
-		a.linkScroll = a.linkCursor
-	}
-	if a.linkCursor >= a.linkScroll+visible {
-		a.linkScroll = a.linkCursor - visible + 1
-	}
-	if a.linkScroll < 0 {
-		a.linkScroll = 0
-	}
-
-	end := a.linkScroll + visible
-	if end > len(a.links) {
-		end = len(a.links)
-	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -521,6 +504,25 @@ func (a *App) layoutLinks(gtx layout.Context) layout.Dimensions {
 			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			visible := gtx.Constraints.Max.Y / rowH
+			if visible <= 0 {
+				visible = 1
+			}
+			if a.linkCursor < a.linkScroll {
+				a.linkScroll = a.linkCursor
+			}
+			if a.linkCursor >= a.linkScroll+visible {
+				a.linkScroll = a.linkCursor - visible + 1
+			}
+			if a.linkScroll < 0 {
+				a.linkScroll = 0
+			}
+
+			end := a.linkScroll + visible
+			if end > len(a.links) {
+				end = len(a.links)
+			}
+
 			var children []layout.FlexChild
 			for i := a.linkScroll; i < end; i++ {
 				idx := i

@@ -53,6 +53,7 @@ const (
 	ActEnterInsert   Action = "enter-insert"
 	ActSwitchAccount Action = "switch-account"
 	ActSettings      Action = "settings"
+	ActYank          Action = "yank"
 )
 
 // Press is a single key event reduced to text + modifiers.
@@ -179,6 +180,7 @@ var normalBindings = map[string]Action{
 	"gT":      ActGotoTrash,
 	"ga":      ActSwitchAccount,
 	",":       ActSettings,
+	"y":       ActYank,
 	"<C-s>":   ActSend,
 	"i":       ActEnterInsert,
 }
