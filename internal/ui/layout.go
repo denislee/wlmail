@@ -346,7 +346,7 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 		func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min.Y = rowH
 			gtx.Constraints.Max.Y = rowH
-			fromColor := a.th.Pal.TextDim
+			fromColor := a.th.Pal.TextMuted
 			if s.Unread {
 				fromColor = a.th.Pal.TextStrong
 			}
@@ -362,7 +362,10 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 						}),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 							lbl := material.Label(a.th.Theme, unit.Sp(fontSize), subj)
-							lbl.Color = a.th.Pal.Text
+							lbl.Color = a.th.Pal.TextDim
+							if s.Unread {
+								lbl.Color = a.th.Pal.Text
+							}
 							a.th.applyFont(&lbl, a.th.Fonts.List)
 							if s.Unread {
 								lbl.Font.Weight = font.Bold
@@ -372,7 +375,11 @@ func (a *App) layoutListRow(gtx layout.Context, idx int, s mail.Summary) layout.
 							return lbl.Layout(gtx)
 						}),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.coloredText(age, a.th.Pal.TextDim, a.th.Fonts.List))
+							ageColor := a.th.Pal.TextMuted
+							if s.Unread {
+								ageColor = a.th.Pal.TextDim
+							}
+							return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.coloredText(age, ageColor, a.th.Fonts.List))
 						}),
 					)
 				}),
