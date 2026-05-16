@@ -10,6 +10,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -75,6 +76,7 @@ var folders = []folder{
 	{"INBOX", "in:inbox"},
 	{"STARRED", "is:starred"},
 	{"SENT", "in:sent"},
+	{"ALL", "in:anywhere -in:trash -in:spam"},
 	{"TRASH", "in:trash"},
 }
 
@@ -97,6 +99,8 @@ type Config struct {
 	Email        string
 	Client       Client
 	SwitchTo     func(email string) (Client, error)
+	Reauth       func(email string) (Client, error)
+	IsAuthErr    func(error) bool
 	ListAccounts func() ([]string, error)
 }
 // App is the top-level UI state.
@@ -106,7 +110,10 @@ type App struct {
 	th           *Theme
 	email        string
 	switchTo     func(email string) (Client, error)
+	reauth       func(email string) (Client, error)
+	isAuthErr    func(error) bool
 	listAccounts func() ([]string, error)
+	reauthing    bool
 
 	mu        sync.Mutex
 	view      view
@@ -126,8 +133,8 @@ type App struct {
 	listMax   int64
 	searchQ   string
 
-	imgCache map[string]paint.ImageOp
-	imgMu    sync.Mutex
+	imgCache  *imageLRU
+	imgClient *http.Client
 
 	// compose state
 	to, subject       widget.Editor
@@ -149,6 +156,9 @@ type App struct {
 	splitDragX float32
 
 	yankURL string
+
+	folderPickerOpen   bool
+	folderPickerCursor int
 }
 
 func (a *App) saveSettings() error {
@@ -211,10 +221,13 @@ func Run(ctx context.Context, cfg Config) error {
 		th:           th,
 		email:        cfg.Email,
 		switchTo:     cfg.SwitchTo,
+		reauth:       cfg.Reauth,
+		isAuthErr:    cfg.IsAuthErr,
 		listAccounts: cfg.ListAccounts,
 		settings:     settings,
 		listMax:      50,
-		imgCache:     make(map[string]paint.ImageOp),
+		imgCache:     newImageLRU(64),
+		imgClient:    &http.Client{Timeout: 10 * time.Second},
 	}
 
 	// Handle default account if specified and not overridden by command line
@@ -422,8 +435,20 @@ func deleteLastWord(ed *widget.Editor) {
 func (a *App) dispatchKey(ctx context.Context, ke key.Event) {
 	a.mu.Lock()
 
+	if a.folderPickerOpen {
+		a.handleFolderPickerKey(ctx, ke)
+		a.mu.Unlock()
+		return
+	}
+
 	if ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "R") {
 		go a.refresh(ctx)
+		a.mu.Unlock()
+		return
+	}
+
+	if ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "K") {
+		a.openFolderPicker()
 		a.mu.Unlock()
 		return
 	}
@@ -753,8 +778,12 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 		a.folderIdx = 2
 		a.listMax = 50
 		go a.refresh(ctx)
-	case keys.ActGotoTrash:
+	case keys.ActGotoAll:
 		a.folderIdx = 3
+		a.listMax = 50
+		go a.refresh(ctx)
+	case keys.ActGotoTrash:
+		a.folderIdx = 4
 		a.listMax = 50
 		go a.refresh(ctx)
 	case keys.ActSend:
@@ -815,6 +844,55 @@ func (a *App) moveLinkCursor(d int) {
 	}
 }
 
+func (a *App) openFolderPicker() {
+	a.folderPickerOpen = true
+	a.folderPickerCursor = a.folderIdx
+	a.win.Invalidate()
+}
+
+func (a *App) closeFolderPicker() {
+	a.folderPickerOpen = false
+	a.win.Invalidate()
+}
+
+func (a *App) handleFolderPickerKey(ctx context.Context, ke key.Event) {
+	if isEscape(ke) {
+		a.closeFolderPicker()
+		return
+	}
+	if ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "K") {
+		a.closeFolderPicker()
+		return
+	}
+	if !ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "Q") {
+		a.closeFolderPicker()
+		return
+	}
+	if ke.Name == "⏎" || ke.Name == "⌤" {
+		if a.folderPickerCursor >= 0 && a.folderPickerCursor < len(folders) {
+			a.folderIdx = a.folderPickerCursor
+			a.listMax = 50
+			go a.refresh(ctx)
+		}
+		a.closeFolderPicker()
+		return
+	}
+	if ke.Name == "↓" || (!ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "J")) {
+		if a.folderPickerCursor < len(folders)-1 {
+			a.folderPickerCursor++
+			a.win.Invalidate()
+		}
+		return
+	}
+	if ke.Name == "↑" || (!ke.Modifiers.Contain(key.ModCtrl) && strings.EqualFold(string(ke.Name), "K")) {
+		if a.folderPickerCursor > 0 {
+			a.folderPickerCursor--
+			a.win.Invalidate()
+		}
+		return
+	}
+}
+
 func (a *App) openLinksDialog() {
 	var links []linkItem
 	seen := make(map[string]int)
@@ -861,6 +939,7 @@ func (a *App) cycleAccount(ctx context.Context) {
 	}
 	accounts, err := a.listAccounts()
 	if err != nil {
+		logErrf("accounts: %v", err)
 		a.setStatus("accounts: " + err.Error())
 		return
 	}
@@ -888,6 +967,7 @@ func (a *App) showAccounts(ctx context.Context) {
 	}
 	accounts, err := a.listAccounts()
 	if err != nil {
+		logErrf("accounts: %v", err)
 		a.setStatus("accounts: " + err.Error())
 		return
 	}
@@ -908,6 +988,7 @@ func (a *App) showAccounts(ctx context.Context) {
 func (a *App) switchToAccount(ctx context.Context, email string) {
 	client, err := a.switchTo(email)
 	if err != nil {
+		logErrf("switch failed: %v", err)
 		a.setStatus("switch failed: " + err.Error())
 		return
 	}
@@ -956,6 +1037,16 @@ func (a *App) refresh(ctx context.Context) {
 	a.mu.Lock()
 	a.loading = false
 	if err != nil {
+		logErrf("list failed: %v", err)
+		if a.isAuthErr != nil && a.isAuthErr(err) && a.reauth != nil && !a.reauthing {
+			a.reauthing = true
+			email := a.email
+			a.status = "session expired — opening browser to re-authenticate…"
+			a.mu.Unlock()
+			a.win.Invalidate()
+			go a.runReauth(ctx, email)
+			return
+		}
 		a.status = "error: " + err.Error()
 	} else {
 		a.items = items
@@ -979,11 +1070,39 @@ func (a *App) refresh(ctx context.Context) {
 	a.win.Invalidate()
 }
 
+// runReauth drives the browser-based OAuth flow when the stored
+// refresh token has been revoked, then swaps in a fresh client and
+// reloads the current folder. Runs on its own goroutine because the
+// OAuth callback server blocks until the user finishes in the browser.
+func (a *App) runReauth(ctx context.Context, email string) {
+	client, err := a.reauth(email)
+	a.mu.Lock()
+	a.reauthing = false
+	if err != nil {
+		a.status = "reauth failed: " + err.Error()
+		a.mu.Unlock()
+		a.win.Invalidate()
+		logErrf("reauth failed: %v", err)
+		return
+	}
+	a.client = client
+	a.status = "re-authenticated — refreshing…"
+	a.mu.Unlock()
+	a.win.Invalidate()
+	a.refresh(ctx)
+}
+
 func (a *App) setStatus(s string) {
 	a.mu.Lock()
 	a.status = s
 	a.mu.Unlock()
 	a.win.Invalidate()
+}
+
+// logErrf prints an error to stdout in addition to whatever status the UI
+// displays, so failures are visible when running wlmail from a terminal.
+func logErrf(format string, args ...any) {
+	log.Printf(format, args...)
 }
 
 // openCurrent kicks off an async fetch of the message under the cursor.
@@ -1000,11 +1119,14 @@ func (a *App) openCurrent(ctx context.Context) {
 		m, err := a.client.Get(cctx, id)
 		a.mu.Lock()
 		if err != nil {
+			logErrf("open failed: %v", err)
 			a.status = "open failed: " + err.Error()
 		} else {
 			a.message = m
 			a.view = viewMessage
 			if m.Unread {
+				a.setUnreadByID(m.ID, false)
+				m.Unread = false
 				go func() { _ = a.client.MarkRead(ctx, m.ID) }()
 			}
 		}
@@ -1023,18 +1145,54 @@ func (a *App) currentID() string {
 	return ""
 }
 
+// removeItemByID removes the message with the given id from a.items and
+// adjusts the cursor. Caller must hold a.mu.
+func (a *App) removeItemByID(id string) {
+	for i, it := range a.items {
+		if it.ID == id {
+			a.items = append(a.items[:i], a.items[i+1:]...)
+			if a.cursor >= len(a.items) && len(a.items) > 0 {
+				a.cursor = len(a.items) - 1
+			}
+			return
+		}
+	}
+}
+
+// setUnreadByID flips the unread flag locally. Caller must hold a.mu.
+func (a *App) setUnreadByID(id string, unread bool) {
+	for i := range a.items {
+		if a.items[i].ID == id {
+			a.items[i].Unread = unread
+			return
+		}
+	}
+}
+
 func (a *App) archive(ctx context.Context) {
 	id := a.currentID()
 	if id == "" {
 		return
 	}
+	a.mu.Lock()
+	folder := folders[a.folderIdx].name
+	if folder == "INBOX" {
+		a.removeItemByID(id)
+	}
+	if a.view == viewMessage {
+		a.view = viewList
+		a.message = nil
+	}
+	a.mu.Unlock()
+	a.win.Invalidate()
 	go func() {
 		if err := a.client.Archive(ctx, id); err != nil {
+			logErrf("archive failed: %v", err)
 			a.setStatus("archive failed: " + err.Error())
+			a.refresh(ctx)
 			return
 		}
 		a.setStatus("archived")
-		a.refresh(ctx)
 	}()
 }
 
@@ -1043,13 +1201,25 @@ func (a *App) trash(ctx context.Context) {
 	if id == "" {
 		return
 	}
+	a.mu.Lock()
+	folder := folders[a.folderIdx].name
+	if folder != "TRASH" {
+		a.removeItemByID(id)
+	}
+	if a.view == viewMessage {
+		a.view = viewList
+		a.message = nil
+	}
+	a.mu.Unlock()
+	a.win.Invalidate()
 	go func() {
 		if err := a.client.Trash(ctx, id); err != nil {
+			logErrf("trash failed: %v", err)
 			a.setStatus("trash failed: " + err.Error())
+			a.refresh(ctx)
 			return
 		}
 		a.setStatus("trashed")
-		a.refresh(ctx)
 	}()
 }
 
@@ -1057,17 +1227,25 @@ func (a *App) toggleStar(ctx context.Context) {
 	if a.cursor < 0 || a.cursor >= len(a.items) {
 		return
 	}
+	a.mu.Lock()
 	it := &a.items[a.cursor]
+	id := it.ID
 	currentlyStarred := it.Starred
+	it.Starred = !currentlyStarred
+	folder := folders[a.folderIdx].name
+	// If we unstarred while in the STARRED folder, drop the row.
+	if currentlyStarred && folder == "STARRED" {
+		a.removeItemByID(id)
+	}
+	a.mu.Unlock()
+	a.win.Invalidate()
 	go func() {
-		if err := a.client.ToggleStar(ctx, it.ID, currentlyStarred); err != nil {
+		if err := a.client.ToggleStar(ctx, id, currentlyStarred); err != nil {
+			logErrf("star failed: %v", err)
 			a.setStatus("star failed: " + err.Error())
+			a.refresh(ctx)
 			return
 		}
-		a.mu.Lock()
-		it.Starred = !currentlyStarred
-		a.mu.Unlock()
-		a.win.Invalidate()
 	}()
 }
 
@@ -1075,7 +1253,11 @@ func (a *App) markRead(ctx context.Context, read bool) {
 	if a.cursor < 0 || a.cursor >= len(a.items) {
 		return
 	}
+	a.mu.Lock()
 	id := a.items[a.cursor].ID
+	a.setUnreadByID(id, !read)
+	a.mu.Unlock()
+	a.win.Invalidate()
 	go func() {
 		var err error
 		if read {
@@ -1084,10 +1266,10 @@ func (a *App) markRead(ctx context.Context, read bool) {
 			err = a.client.MarkUnread(ctx, id)
 		}
 		if err != nil {
+			logErrf("mark failed: %v", err)
 			a.setStatus("mark failed: " + err.Error())
-			return
+			a.refresh(ctx)
 		}
-		a.refresh(ctx)
 	}()
 }
 
@@ -1183,6 +1365,7 @@ func (a *App) sendCompose(ctx context.Context) {
 	go func() {
 		a.setStatus("sending…")
 		if err := a.client.Send(ctx, out); err != nil {
+			logErrf("send failed: %v", err)
 			a.setStatus("send failed: " + err.Error())
 			return
 		}
@@ -1201,18 +1384,12 @@ func (a *App) exitInsert() {
 }
 
 func (a *App) loadImage(url string) {
-	a.imgMu.Lock()
-	if _, ok := a.imgCache[url]; ok {
-		a.imgMu.Unlock()
+	if !a.imgCache.reserve(url) {
 		return
 	}
-	// Use a placeholder while loading to avoid multiple requests
-	a.imgCache[url] = paint.ImageOp{}
-	a.imgMu.Unlock()
 
 	go func() {
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Get(url)
+		resp, err := a.imgClient.Get(url)
 		if err != nil {
 			return
 		}
@@ -1226,10 +1403,7 @@ func (a *App) loadImage(url string) {
 			return
 		}
 
-		op := paint.NewImageOp(img)
-		a.imgMu.Lock()
-		a.imgCache[url] = op
-		a.imgMu.Unlock()
+		a.imgCache.set(url, paint.NewImageOp(img))
 		a.win.Invalidate()
 	}()
 }

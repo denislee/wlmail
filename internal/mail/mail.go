@@ -3,11 +3,14 @@ package mail
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"mime"
 	"mime/quotedprintable"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
@@ -15,8 +18,27 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 	"google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
+
+// Shared decoders / converters. mime.WordDecoder is safe for concurrent
+// use; html-to-markdown's Converter is not, so guard it with a mutex —
+// still cheaper than rebuilding it per message.
+var (
+	mimeDecoder = &mime.WordDecoder{}
+
+	htmlConverterOnce sync.Once
+	htmlConverter     *md.Converter
+	htmlConverterMu   sync.Mutex
+)
+
+func getHTMLConverter() *md.Converter {
+	htmlConverterOnce.Do(func() {
+		htmlConverter = md.NewConverter("", true, nil)
+	})
+	return htmlConverter
+}
 
 const (
 	LabelInbox   = "INBOX"
@@ -108,40 +130,176 @@ func (c *Client) ListIDs(ctx context.Context, query string, max int64) ([]string
 	return allIDs, nil
 }
 
-// GetSummaries fetches the summaries for the given list of message IDs concurrently.
+// GetSummaries fetches the summaries for the given list of message IDs
+// concurrently, using a bounded worker pool to limit goroutine count and
+// API pressure.
 func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, error) {
+	const workers = 10
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	type job struct {
+		idx int
+		id  string
+	}
 	type result struct {
 		idx int
 		s   Summary
-		err error
-	}
-	resChan := make(chan result, len(ids))
-	sem := make(chan struct{}, 10) // limit concurrency
-
-	for i, id := range ids {
-		go func(i int, id string) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			s, err := c.summary(ctx, id)
-			resChan <- result{i, s, err}
-		}(i, id)
+		ok  bool
 	}
 
-	resMap := make(map[int]Summary)
-	for i := 0; i < len(ids); i++ {
-		res := <-resChan
-		if res.err == nil {
-			resMap[res.idx] = res.s
+	jobs := make(chan job)
+	results := make(chan result, len(ids))
+
+	var wg sync.WaitGroup
+	n := workers
+	if n > len(ids) {
+		n = len(ids)
+	}
+	for w := 0; w < n; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				s, err := c.summary(ctx, j.id)
+				results <- result{idx: j.idx, s: s, ok: err == nil}
+			}
+		}()
+	}
+	go func() {
+		for i, id := range ids {
+			select {
+			case <-ctx.Done():
+				close(jobs)
+				return
+			case jobs <- job{idx: i, id: id}:
+			}
+		}
+		close(jobs)
+	}()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	indexed := make([]Summary, len(ids))
+	mask := make([]bool, len(ids))
+	for r := range results {
+		if r.ok {
+			indexed[r.idx] = r.s
+			mask[r.idx] = true
 		}
 	}
-
-	out := make([]Summary, 0, len(resMap))
-	for i := 0; i < len(ids); i++ {
-		if s, ok := resMap[i]; ok {
-			out = append(out, s)
+	out := make([]Summary, 0, len(ids))
+	for i, ok := range mask {
+		if ok {
+			out = append(out, indexed[i])
 		}
 	}
 	return out, nil
+}
+
+// HistoryChanges describes the mailbox deltas returned by Gmail's
+// users.history endpoint since the previous call.
+type HistoryChanges struct {
+	Added         []string
+	Removed       []string
+	LabelsAdded   map[string][]string
+	LabelsRemoved map[string][]string
+}
+
+// History returns mailbox changes since startHistoryID, paginating
+// internally. The second return value is the latest historyId observed
+// (suitable for storing as the next baseline).
+func (c *Client) History(ctx context.Context, startHistoryID string) (HistoryChanges, string, error) {
+	out := HistoryChanges{
+		LabelsAdded:   map[string][]string{},
+		LabelsRemoved: map[string][]string{},
+	}
+	startID, err := strconv.ParseUint(startHistoryID, 10, 64)
+	if err != nil {
+		return out, "", fmt.Errorf("history: invalid baseline %q: %w", startHistoryID, err)
+	}
+	added := map[string]struct{}{}
+	removed := map[string]struct{}{}
+	latest := startHistoryID
+	pageToken := ""
+	for {
+		req := c.svc.Users.History.List(c.user).StartHistoryId(startID).Context(ctx)
+		if pageToken != "" {
+			req = req.PageToken(pageToken)
+		}
+		resp, err := req.Do()
+		if err != nil {
+			return out, "", err
+		}
+		if resp.HistoryId != 0 {
+			latest = strconv.FormatUint(resp.HistoryId, 10)
+		}
+		for _, h := range resp.History {
+			for _, m := range h.MessagesAdded {
+				if m.Message != nil && m.Message.Id != "" {
+					added[m.Message.Id] = struct{}{}
+				}
+			}
+			for _, m := range h.MessagesDeleted {
+				if m.Message != nil && m.Message.Id != "" {
+					removed[m.Message.Id] = struct{}{}
+					delete(added, m.Message.Id)
+				}
+			}
+			for _, la := range h.LabelsAdded {
+				if la.Message == nil {
+					continue
+				}
+				out.LabelsAdded[la.Message.Id] = append(out.LabelsAdded[la.Message.Id], la.LabelIds...)
+			}
+			for _, lr := range h.LabelsRemoved {
+				if lr.Message == nil {
+					continue
+				}
+				out.LabelsRemoved[lr.Message.Id] = append(out.LabelsRemoved[lr.Message.Id], lr.LabelIds...)
+			}
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	for id := range added {
+		out.Added = append(out.Added, id)
+	}
+	for id := range removed {
+		out.Removed = append(out.Removed, id)
+	}
+	return out, latest, nil
+}
+
+// CurrentHistoryID returns the current mailbox historyId. Useful for
+// seeding the incremental-sync baseline on first run.
+func (c *Client) CurrentHistoryID(ctx context.Context) (string, error) {
+	p, err := c.svc.Users.GetProfile(c.user).Context(ctx).Do()
+	if err != nil {
+		return "", err
+	}
+	if p.HistoryId == 0 {
+		return "", nil
+	}
+	return strconv.FormatUint(p.HistoryId, 10), nil
+}
+
+// IsHistoryExpired reports whether err indicates that the stored
+// historyId is too old to use (Gmail returns 404 in that case).
+func IsHistoryExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ge *googleapi.Error
+	if errors.As(err, &ge) {
+		return ge.Code == 404
+	}
+	return false
 }
 
 func (c *Client) summary(ctx context.Context, id string) (Summary, error) {
@@ -279,8 +437,10 @@ func extractBody(p *gmail.MessagePart) (RichBody, string) {
 	}
 
 	if htmlContent != "" {
-		converter := md.NewConverter("", true, nil)
+		converter := getHTMLConverter()
+		htmlConverterMu.Lock()
 		markdown, err := converter.ConvertString(htmlContent)
+		htmlConverterMu.Unlock()
 		if err != nil {
 			return RichBody{{Text: htmlContent}}, htmlContent
 		}
@@ -392,8 +552,7 @@ func isTrackingPixel(url string) bool {
 }
 
 func decodeMime(v string) string {
-	dec := &mime.WordDecoder{}
-	out, err := dec.DecodeHeader(v)
+	out, err := mimeDecoder.DecodeHeader(v)
 	if err != nil {
 		return v
 	}

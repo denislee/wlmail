@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"container/list"
 	"image"
 	"image/color"
+	"sync"
 
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -10,6 +12,83 @@ import (
 	"gioui.org/op/paint"
 	"gioui.org/unit"
 )
+
+// imageLRU is a bounded LRU cache of decoded paint.ImageOps keyed by URL.
+// A zero ImageOp value is used as an in-flight placeholder so duplicate
+// fetches are coalesced.
+type imageLRU struct {
+	mu    sync.Mutex
+	cap   int
+	ll    *list.List
+	index map[string]*list.Element
+}
+
+type imageEntry struct {
+	url string
+	op  paint.ImageOp
+}
+
+func newImageLRU(capacity int) *imageLRU {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return &imageLRU{
+		cap:   capacity,
+		ll:    list.New(),
+		index: make(map[string]*list.Element),
+	}
+}
+
+// get returns the cached ImageOp and whether the key is known (even if the
+// op is still the zero-value placeholder).
+func (c *imageLRU) get(url string) (paint.ImageOp, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.index[url]
+	if !ok {
+		return paint.ImageOp{}, false
+	}
+	c.ll.MoveToFront(e)
+	return e.Value.(*imageEntry).op, true
+}
+
+// reserve marks url as in-flight if it isn't already known. Returns true
+// if the caller is responsible for actually loading the image.
+func (c *imageLRU) reserve(url string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.index[url]; ok {
+		return false
+	}
+	e := c.ll.PushFront(&imageEntry{url: url})
+	c.index[url] = e
+	c.evictLocked()
+	return true
+}
+
+func (c *imageLRU) set(url string, op paint.ImageOp) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.index[url]; ok {
+		e.Value.(*imageEntry).op = op
+		c.ll.MoveToFront(e)
+		return
+	}
+	e := c.ll.PushFront(&imageEntry{url: url, op: op})
+	c.index[url] = e
+	c.evictLocked()
+}
+
+func (c *imageLRU) evictLocked() {
+	for c.ll.Len() > c.cap {
+		back := c.ll.Back()
+		if back == nil {
+			return
+		}
+		delete(c.index, back.Value.(*imageEntry).url)
+		c.ll.Remove(back)
+	}
+}
 
 // paintedBg fills the area occupied by w with bg, then renders w on top.
 func paintedBg(gtx layout.Context, bg color.NRGBA, w layout.Widget) layout.Dimensions {

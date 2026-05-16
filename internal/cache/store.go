@@ -2,7 +2,8 @@ package cache
 
 import (
 	"context"
-	"slices"
+	"sort"
+	"strconv"
 
 	"wlmail/internal/mail"
 )
@@ -12,31 +13,53 @@ import (
 // arbitrary searches always go to the API.
 //
 // Even for cached results we kick off an asynchronous refresh so the next
-// call sees fresher data.
+// call sees fresher data. Refreshes are coalesced per-query.
 func (c *Cache) List(ctx context.Context, q string, max int64) ([]mail.Summary, error) {
 	label := labelForFolderQuery(q)
 	if label == "" {
-		// Search / unknown query: hit the API directly, then upsert.
 		return c.fetchAndStore(ctx, q, max)
 	}
 	cached, err := c.listByLabel(ctx, label, int(max))
 	if err != nil {
 		return nil, err
 	}
-	// If the cache has fewer items than requested, we need to fetch more
-	// synchronously so the UI can actually show them.
 	if len(cached) < int(max) {
 		return c.fetchAndStore(ctx, q, max)
 	}
-	// If we have enough in cache, still kick off a background refresh
-	// for the first page to keep things fresh.
+	c.backgroundRefresh(q, max)
+	return cached, nil
+}
+
+// backgroundRefresh kicks off (or joins) a coalesced background refresh
+// for q. Only one runs per query key at a time; concurrent calls share
+// the in-flight one and return immediately.
+func (c *Cache) backgroundRefresh(q string, max int64) {
+	key := q + "\x00" + strconv.FormatInt(max, 10)
+	c.refreshMu.Lock()
+	if _, busy := c.refreshes[key]; busy {
+		c.refreshMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	c.refreshes[key] = done
+	c.refreshMu.Unlock()
+
 	go func() {
-		// Best-effort background refresh.
+		defer func() {
+			c.refreshMu.Lock()
+			delete(c.refreshes, key)
+			c.refreshMu.Unlock()
+			close(done)
+		}()
 		bg, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		// Prefer incremental sync; fall back to a full fetch when history
+		// isn't available (cold start or expired baseline).
+		if err := c.Sync(bg); err == nil {
+			return
+		}
 		_, _ = c.fetchAndStore(bg, q, max)
 	}()
-	return cached, nil
 }
 
 func (c *Cache) fetchAndStore(ctx context.Context, q string, max int64) ([]mail.Summary, error) {
@@ -45,71 +68,85 @@ func (c *Cache) fetchAndStore(ctx context.Context, q string, max int64) ([]mail.
 		return nil, err
 	}
 
-	var missingIDs []string
-	cachedMap := make(map[string]mail.Summary)
+	cachedMap, err := c.getSummariesBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 
+	var missingIDs []string
 	for _, id := range ids {
-		s, err := c.getSummary(ctx, id)
-		if err == nil && s.ID != "" {
-			cachedMap[id] = s
-		} else {
+		if _, ok := cachedMap[id]; !ok {
 			missingIDs = append(missingIDs, id)
 		}
 	}
 
-	var newItems []mail.Summary
 	if len(missingIDs) > 0 {
-		newItems, err = c.api.GetSummaries(ctx, missingIDs)
+		newItems, err := c.api.GetSummaries(ctx, missingIDs)
 		if err != nil {
 			return nil, err
 		}
-
+		stored, err := c.storedLabelsBatch(ctx, missingIDs)
+		if err != nil {
+			return nil, err
+		}
 		folderLabel := labelForFolderQuery(q)
 		for _, s := range newItems {
-			labels := []string{}
-			if folderLabel != "" {
-				labels = append(labels, folderLabel)
-			}
-			if s.Unread {
-				labels = append(labels, mail.LabelUnread)
-			}
-			if s.Starred {
-				labels = append(labels, mail.LabelStarred)
-			}
-			_ = c.upsertSummary(ctx, s, mergeWithStored(c, ctx, s.ID, labels))
+			labels := mergeLabelsFromExisting(stored[s.ID], folderLabel, s.Unread, s.Starred)
+			_ = c.upsertSummary(ctx, s, labels)
 			cachedMap[s.ID] = s
 		}
 	}
 
-	var items []mail.Summary
+	items := make([]mail.Summary, 0, len(ids))
 	for _, id := range ids {
 		if s, ok := cachedMap[id]; ok {
 			items = append(items, s)
 		}
 	}
 
-	slices.SortFunc(items, func(a, b mail.Summary) int {
-		if a.Unread != b.Unread {
-			if a.Unread {
-				return -1
-			}
-			return 1
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Unread != items[j].Unread {
+			return items[i].Unread
 		}
-		if a.Date.After(b.Date) {
-			return -1
-		}
-		if a.Date.Before(b.Date) {
-			return 1
-		}
-		return 0
+		return items[i].Date.After(items[j].Date)
 	})
+
+	// Best-effort: seed historyId so future syncs can run incrementally.
+	if cur, _ := c.kvGet(ctx, "history_id"); cur == "" {
+		if hid, err := c.api.CurrentHistoryID(ctx); err == nil && hid != "" {
+			_ = c.kvSet(ctx, "history_id", hid)
+		}
+	}
 
 	return items, nil
 }
 
-// mergeWithStored unions newLabels with whatever was already persisted,
-// preserving folder labels (INBOX/SENT/...) that List() wouldn't otherwise
-// give us, but updating state labels (UNREAD/STARRED).
+// mergeLabelsFromExisting unions newly-derived labels with the folder/state
+// labels we already persisted. Existing folder labels are preserved (the
+// listing endpoint doesn't return them), but UNREAD/STARRED is taken from
+// the fresh server state.
+func mergeLabelsFromExisting(existing []string, folderLabel string, unread, starred bool) []string {
+	var merged []string
+	for _, l := range existing {
+		if l != mail.LabelUnread && l != mail.LabelStarred {
+			merged = append(merged, l)
+		}
+	}
+	if folderLabel != "" {
+		merged = addLabel(merged, folderLabel)
+	}
+	if unread {
+		merged = addLabel(merged, mail.LabelUnread)
+	}
+	if starred {
+		merged = addLabel(merged, mail.LabelStarred)
+	}
+	return merged
+}
+
+// mergeWithStored looks up existing labels in one query and merges them
+// with newLabels, preserving folder labels (INBOX/SENT/...) while taking
+// the new state labels (UNREAD/STARRED).
 func mergeWithStored(c *Cache, ctx context.Context, id string, newLabels []string) []string {
 	existing, _ := c.storedLabels(ctx, id)
 	var merged []string
@@ -151,10 +188,61 @@ func derivedLabels(m *mail.Message) []string {
 	if m.Starred {
 		labels = append(labels, mail.LabelStarred)
 	}
-	// We don't have the raw label list here — best effort. Folder labels
-	// can be resynced by a future Sync() implementation.
 	return labels
 }
+
+// Sync applies any pending mailbox changes since the last stored historyId.
+// Returns an error if no baseline is set (the caller should fall back to a
+// full fetchAndStore in that case).
+func (c *Cache) Sync(ctx context.Context) error {
+	startID, err := c.kvGet(ctx, "history_id")
+	if err != nil {
+		return err
+	}
+	if startID == "" {
+		return errNoBaseline
+	}
+	changes, latest, err := c.api.History(ctx, startID)
+	if err != nil {
+		if mail.IsHistoryExpired(err) {
+			_ = c.kvSet(ctx, "history_id", "")
+		}
+		return err
+	}
+	for _, id := range changes.Removed {
+		_ = c.deleteMessage(ctx, id)
+	}
+	if len(changes.Added) > 0 {
+		sums, err := c.api.GetSummaries(ctx, changes.Added)
+		if err == nil {
+			stored, _ := c.storedLabelsBatch(ctx, changes.Added)
+			for _, s := range sums {
+				labels := mergeLabelsFromExisting(stored[s.ID], "", s.Unread, s.Starred)
+				_ = c.upsertSummary(ctx, s, labels)
+			}
+		}
+	}
+	for id, labels := range changes.LabelsAdded {
+		for _, l := range labels {
+			_ = c.addMessageLabel(ctx, id, l)
+		}
+	}
+	for id, labels := range changes.LabelsRemoved {
+		for _, l := range labels {
+			_ = c.removeMessageLabel(ctx, id, l)
+		}
+	}
+	if latest != "" {
+		_ = c.kvSet(ctx, "history_id", latest)
+	}
+	return nil
+}
+
+var errNoBaseline = baselineMissing{}
+
+type baselineMissing struct{}
+
+func (baselineMissing) Error() string { return "cache: no history baseline" }
 
 // ---------- write-through modifications ----------
 

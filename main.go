@@ -50,6 +50,7 @@ func loadUISettings() uiSettings {
 }
 
 func main() {
+	log.SetOutput(os.Stdout)
 	var (
 		addFlag     = flag.Bool("add", false, "register a new Google account via OAuth and exit")
 		listFlag    = flag.Bool("list", false, "list registered accounts and exit")
@@ -128,6 +129,8 @@ func main() {
 			Email:        email,
 			Client:       client,
 			SwitchTo:     switchAccount(ctx),
+			Reauth:       reauthAccount(ctx),
+			IsAuthErr:    auth.IsAuthExpired,
 			ListAccounts: auth.List,
 		}); err != nil {
 			log.Printf("ui: %v", err)
@@ -178,6 +181,22 @@ func listAccounts() {
 // client (cache + Gmail API) to a different registered account.
 func switchAccount(ctx context.Context) func(string) (ui.Client, error) {
 	return func(email string) (ui.Client, error) {
+		hc, err := auth.ClientFor(ctx, email)
+		if err != nil {
+			return nil, err
+		}
+		return openClient(ctx, email, hc)
+	}
+}
+
+// reauthAccount returns a callback the UI invokes when the stored
+// refresh token has been revoked. It runs OAuth in the browser, then
+// rebuilds the mail client around the freshly-saved token.
+func reauthAccount(ctx context.Context) func(string) (ui.Client, error) {
+	return func(email string) (ui.Client, error) {
+		if err := auth.Reauth(ctx, email); err != nil {
+			return nil, err
+		}
 		hc, err := auth.ClientFor(ctx, email)
 		if err != nil {
 			return nil, err

@@ -47,6 +47,7 @@ const (
 	ActGotoInbox   Action = "goto-inbox"
 	ActGotoStarred Action = "goto-starred"
 	ActGotoSent    Action = "goto-sent"
+	ActGotoAll     Action = "goto-all"
 	ActGotoTrash   Action = "goto-trash"
 	ActSend          Action = "send"
 	ActCancel        Action = "cancel"
@@ -177,6 +178,7 @@ var normalBindings = map[string]Action{
 	"gi":      ActGotoInbox,
 	"gs":      ActGotoStarred,
 	"gt":      ActGotoSent,
+	"gA":      ActGotoAll,
 	"gT":      ActGotoTrash,
 	"ga":      ActSwitchAccount,
 	",":       ActSettings,

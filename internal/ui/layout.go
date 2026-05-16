@@ -11,6 +11,7 @@ import (
 	"gioui.org/io/event"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
 	"gioui.org/unit"
@@ -50,6 +51,116 @@ func (a *App) layout(gtx layout.Context) {
 		}),
 		layout.Rigid(a.layoutStatus),
 	)
+
+	if a.folderPickerOpen {
+		a.layoutFolderPicker(gtx)
+	}
+}
+
+func (a *App) layoutFolderPicker(gtx layout.Context) layout.Dimensions {
+	size := gtx.Constraints.Max
+	paint.FillShape(gtx.Ops, color.NRGBA{A: 0xa0}, clip.Rect{Max: size}.Op())
+
+	fontSize := a.th.Fonts.Global.Size
+	if fontSize == 0 {
+		fontSize = float32(a.th.TextSize)
+	}
+	rowH := gtx.Dp(unit.Dp(fontSize * 2.4))
+	pad := gtx.Dp(unit.Dp(8))
+	boxW := gtx.Dp(unit.Dp(340))
+	if boxW > size.X-pad*2 {
+		boxW = size.X - pad*2
+	}
+
+	content := func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(8), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						l := material.Label(a.th.Theme, unit.Sp(fontSize*1.15), "Switch folder")
+						l.Color = a.th.Pal.Accent
+						l.Font.Weight = font.Bold
+						return l.Layout(gtx)
+					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					var children []layout.FlexChild
+					for i, f := range folders {
+						i, f := i, f
+						children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.layoutFolderPickerRow(gtx, i, f, rowH, fontSize)
+						}))
+					}
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(8), Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						l := material.Label(a.th.Theme, unit.Sp(fontSize*0.9), "j/k move • Enter select • q / Ctrl-k / Esc close")
+						l.Color = a.th.Pal.TextDim
+						return l.Layout(gtx)
+					})
+				}),
+			)
+		})
+	}
+
+	// Measure the content first so the box fits snugly around it.
+	macro := op.Record(gtx.Ops)
+	measureGtx := gtx
+	measureGtx.Constraints = layout.Constraints{
+		Min: image.Pt(boxW, 0),
+		Max: image.Pt(boxW, size.Y),
+	}
+	dims := content(measureGtx)
+	_ = macro.Stop()
+
+	boxH := dims.Size.Y
+	origin := image.Pt((size.X-boxW)/2, (size.Y-boxH)/2)
+
+	defer op.Offset(origin).Push(gtx.Ops).Pop()
+
+	box := clip.UniformRRect(image.Rectangle{Max: image.Pt(boxW, boxH)}, gtx.Dp(unit.Dp(8)))
+	paint.FillShape(gtx.Ops, a.th.Pal.Bg, box.Op(gtx.Ops))
+	border := clip.Stroke{Path: box.Path(gtx.Ops), Width: float32(max(gtx.Dp(unit.Dp(1)), 1))}.Op()
+	paint.FillShape(gtx.Ops, a.th.Pal.BorderStrong, border)
+
+	gtx.Constraints = layout.Exact(image.Pt(boxW, boxH))
+	content(gtx)
+	return layout.Dimensions{Size: size}
+}
+
+func (a *App) layoutFolderPickerRow(gtx layout.Context, idx int, f folder, rowH int, fontSize float32) layout.Dimensions {
+	w := gtx.Constraints.Max.X
+	rect := image.Pt(w, rowH)
+	if idx == a.folderPickerCursor {
+		r := clip.UniformRRect(image.Rectangle{Max: rect}, gtx.Dp(unit.Dp(4)))
+		paint.FillShape(gtx.Ops, a.th.Pal.BgRowSelected, r.Op(gtx.Ops))
+	}
+	indicator := ""
+	if idx == a.folderIdx {
+		indicator = "● "
+	} else {
+		indicator = "  "
+	}
+	gtx.Constraints.Min = rect
+	gtx.Constraints.Max.Y = rowH
+	return layout.Inset{Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Label(a.th.Theme, unit.Sp(fontSize), indicator+f.name)
+						if idx == a.folderPickerCursor {
+							lbl.Color = a.th.Pal.TextStrong
+							lbl.Font.Weight = font.Bold
+						} else {
+							lbl.Color = a.th.Pal.Text
+						}
+						return lbl.Layout(gtx)
+					}),
+				)
+			})
+		})
 }
 
 func (a *App) layoutSplit(gtx layout.Context) layout.Dimensions {
@@ -659,9 +770,7 @@ func (a *App) layoutMessage(gtx layout.Context) layout.Dimensions {
 							return Flow{}.Layout(gtx, len(words), func(gtx layout.Context, i int) layout.Dimensions {
 								wd := words[i]
 								if wd.s.ImageURL != "" && a.settings.RenderImages {
-									a.imgMu.Lock()
-									op, ok := a.imgCache[wd.s.ImageURL]
-									a.imgMu.Unlock()
+									op, ok := a.imgCache.get(wd.s.ImageURL)
 									if ok && op != (paint.ImageOp{}) {
 										img := widget.Image{Src: op, Scale: 0.5}
 										img.Fit = widget.Contain
@@ -790,7 +899,8 @@ Actions
 
 Folders
   gi  inbox      gs  starred
-  gt  sent       gT  trash
+  gt  sent       gA  all mail       gT  trash
+  Ctrl-k         folder picker (j/k, Enter; q/Ctrl-k/Esc to close)
 
 Accounts
   ga             switch to next account

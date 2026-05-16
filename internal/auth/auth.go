@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -363,6 +364,50 @@ func Add(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return email, nil
+}
+
+// Reauth runs the OAuth flow for an already-registered account and
+// overwrites its stored token. It verifies the user authorized the
+// same Google account so we don't silently clobber another account's
+// tokens if the wrong identity is chosen in the browser.
+func Reauth(ctx context.Context, email string) error {
+	base, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	cfg, err := loadCredentials(base)
+	if err != nil {
+		return err
+	}
+	tok, err := interactive(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	hc := oauth2.NewClient(ctx, oauth2.StaticTokenSource(tok))
+	got, err := fetchEmail(ctx, hc)
+	if err != nil {
+		return fmt.Errorf("fetch email: %w", err)
+	}
+	if got != email {
+		return fmt.Errorf("authorized %s, expected %s — token discarded", got, email)
+	}
+	return saveToken(base, email, tok)
+}
+
+// IsAuthExpired reports whether err indicates the OAuth refresh token
+// has been revoked or expired (invalid_grant). When true, the caller
+// should re-run the OAuth flow to recover.
+func IsAuthExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) {
+		return re.ErrorCode == "invalid_grant"
+	}
+	s := err.Error()
+	return strings.Contains(s, "invalid_grant") ||
+		strings.Contains(s, "Token has been expired or revoked")
 }
 
 // ---------- HTTP clients ----------
