@@ -65,6 +65,7 @@ type Settings struct {
 	DarkModeLeft   bool
 	DarkModeRight  bool
 	SplitRatio     float32
+	LastFolderIdx  int
 }
 
 type folder struct {
@@ -187,6 +188,7 @@ func loadSettings() Settings {
 		DarkModeLeft:  true,
 		DarkModeRight: true,
 		SplitRatio:    0.35,
+		LastFolderIdx: 3,
 	}
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -199,6 +201,9 @@ func loadSettings() Settings {
 	_ = json.Unmarshal(b, &s)
 	if s.SplitRatio <= 0 {
 		s.SplitRatio = 0.35
+	}
+	if s.LastFolderIdx < 0 || s.LastFolderIdx >= len(folders) {
+		s.LastFolderIdx = 3
 	}
 	return s
 }
@@ -226,6 +231,7 @@ func Run(ctx context.Context, cfg Config) error {
 		listAccounts: cfg.ListAccounts,
 		settings:     settings,
 		listMax:      50,
+		folderIdx:    settings.LastFolderIdx,
 		imgCache:     newImageLRU(64),
 		imgClient:    &http.Client{Timeout: 10 * time.Second},
 	}
@@ -288,6 +294,8 @@ func (a *App) loop(ctx context.Context) error {
 	for {
 		switch e := a.win.Event().(type) {
 		case app.DestroyEvent:
+			a.settings.LastFolderIdx = a.folderIdx
+			_ = a.saveSettings()
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
@@ -749,15 +757,15 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 	case keys.ActCompose:
 		a.startCompose("", "", "", "", "")
 	case keys.ActReply:
-		if a.focus == paneMessage {
+		if a.view == viewMessage {
 			a.startReply(false)
 		}
 	case keys.ActReplyAll:
-		if a.focus == paneMessage {
+		if a.view == viewMessage {
 			a.startReply(true)
 		}
 	case keys.ActForward:
-		if a.focus == paneMessage {
+		if a.view == viewMessage {
 			a.startForward()
 		}
 	case keys.ActSearch:
@@ -1169,12 +1177,12 @@ func (a *App) setUnreadByID(id string, unread bool) {
 	}
 }
 
+// archive is called from run() which holds a.mu — do not re-lock.
 func (a *App) archive(ctx context.Context) {
 	id := a.currentID()
 	if id == "" {
 		return
 	}
-	a.mu.Lock()
 	folder := folders[a.folderIdx].name
 	if folder == "INBOX" {
 		a.removeItemByID(id)
@@ -1183,7 +1191,6 @@ func (a *App) archive(ctx context.Context) {
 		a.view = viewList
 		a.message = nil
 	}
-	a.mu.Unlock()
 	a.win.Invalidate()
 	go func() {
 		if err := a.client.Archive(ctx, id); err != nil {
@@ -1196,12 +1203,12 @@ func (a *App) archive(ctx context.Context) {
 	}()
 }
 
+// trash is called from run() which holds a.mu — do not re-lock.
 func (a *App) trash(ctx context.Context) {
 	id := a.currentID()
 	if id == "" {
 		return
 	}
-	a.mu.Lock()
 	folder := folders[a.folderIdx].name
 	if folder != "TRASH" {
 		a.removeItemByID(id)
@@ -1210,7 +1217,6 @@ func (a *App) trash(ctx context.Context) {
 		a.view = viewList
 		a.message = nil
 	}
-	a.mu.Unlock()
 	a.win.Invalidate()
 	go func() {
 		if err := a.client.Trash(ctx, id); err != nil {
@@ -1223,11 +1229,11 @@ func (a *App) trash(ctx context.Context) {
 	}()
 }
 
+// toggleStar is called from run() which holds a.mu — do not re-lock.
 func (a *App) toggleStar(ctx context.Context) {
 	if a.cursor < 0 || a.cursor >= len(a.items) {
 		return
 	}
-	a.mu.Lock()
 	it := &a.items[a.cursor]
 	id := it.ID
 	currentlyStarred := it.Starred
@@ -1237,7 +1243,6 @@ func (a *App) toggleStar(ctx context.Context) {
 	if currentlyStarred && folder == "STARRED" {
 		a.removeItemByID(id)
 	}
-	a.mu.Unlock()
 	a.win.Invalidate()
 	go func() {
 		if err := a.client.ToggleStar(ctx, id, currentlyStarred); err != nil {
@@ -1249,14 +1254,13 @@ func (a *App) toggleStar(ctx context.Context) {
 	}()
 }
 
+// markRead is called from run() which holds a.mu — do not re-lock.
 func (a *App) markRead(ctx context.Context, read bool) {
 	if a.cursor < 0 || a.cursor >= len(a.items) {
 		return
 	}
-	a.mu.Lock()
 	id := a.items[a.cursor].ID
 	a.setUnreadByID(id, !read)
-	a.mu.Unlock()
 	a.win.Invalidate()
 	go func() {
 		var err error

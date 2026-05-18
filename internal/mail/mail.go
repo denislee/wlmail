@@ -241,12 +241,21 @@ func (c *Client) History(ctx context.Context, startHistoryID string) (HistoryCha
 			for _, m := range h.MessagesAdded {
 				if m.Message != nil && m.Message.Id != "" {
 					added[m.Message.Id] = struct{}{}
+					// Capture folder labels (INBOX/SENT/TRASH/…) carried on
+					// the new message itself; summary() drops everything
+					// except UNREAD/STARRED, so without this the message
+					// would be inserted with no folder label and never
+					// appear in listByLabel results.
+					if len(m.Message.LabelIds) > 0 {
+						out.LabelsAdded[m.Message.Id] = append(out.LabelsAdded[m.Message.Id], m.Message.LabelIds...)
+					}
 				}
 			}
 			for _, m := range h.MessagesDeleted {
 				if m.Message != nil && m.Message.Id != "" {
 					removed[m.Message.Id] = struct{}{}
 					delete(added, m.Message.Id)
+					delete(out.LabelsAdded, m.Message.Id)
 				}
 			}
 			for _, la := range h.LabelsAdded {
