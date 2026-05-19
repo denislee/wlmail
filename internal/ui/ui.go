@@ -79,6 +79,7 @@ var folders = []folder{
 	{"SENT", "in:sent"},
 	{"ALL", "in:anywhere -in:trash -in:spam"},
 	{"TRASH", "in:trash"},
+	{"UNREAD", "is:unread -in:trash -in:spam"},
 }
 
 // Client is the surface the UI needs from the mail layer. Both
@@ -794,6 +795,10 @@ func (a *App) run(ctx context.Context, act keys.Action) {
 		a.folderIdx = 4
 		a.listMax = 50
 		go a.refresh(ctx)
+	case keys.ActGotoUnread:
+		a.folderIdx = 5
+		a.listMax = 50
+		go a.refresh(ctx)
 	case keys.ActSend:
 		a.sendCompose(ctx)
 	case keys.ActSwitchAccount:
@@ -1188,8 +1193,12 @@ func (a *App) archive(ctx context.Context) {
 		a.removeItemByID(id)
 	}
 	if a.view == viewMessage {
-		a.view = viewList
 		a.message = nil
+		if a.cursor >= 0 && a.cursor < len(a.items) && a.items[a.cursor].ID != id {
+			a.openCurrent(ctx)
+		} else {
+			a.view = viewList
+		}
 	}
 	a.win.Invalidate()
 	go func() {
@@ -1214,8 +1223,12 @@ func (a *App) trash(ctx context.Context) {
 		a.removeItemByID(id)
 	}
 	if a.view == viewMessage {
-		a.view = viewList
 		a.message = nil
+		if a.cursor >= 0 && a.cursor < len(a.items) && a.items[a.cursor].ID != id {
+			a.openCurrent(ctx)
+		} else {
+			a.view = viewList
+		}
 	}
 	a.win.Invalidate()
 	go func() {

@@ -10,7 +10,7 @@ official Gmail API.
 - OAuth2 with token persisted in `$XDG_CONFIG_HOME/wlmail/`
 - Vim navigation: `j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u`, `/` to search
 - Actions: `e` archive, `dd` trash, `s` star, `r`/`a`/`f` reply / reply-all / forward, `c` compose
-- Folder switching: `gi` inbox, `gs` starred, `gt` sent, `gT` trash
+- Folder switching: `gi` inbox, `gs` starred, `gt` sent, `gT` trash, `gu` unread
 - Compose mode: `i` to enter insert, `Esc` to leave, `Ctrl-s` to send
 - `?` opens a built-in cheat sheet
 
@@ -103,7 +103,7 @@ Wayland compositor (sway, Hyprland, GNOME, KDE Plasma 5.24+).
 | `R`, `Ctrl-r`  | refresh current folder       |
 | `/`            | start search (Enter to run)  |
 | `n` / `N`      | next / prev match            |
-| `gi gs gt gT`  | inbox / starred / sent / trash |
+| `gi gs gt gT gu` | inbox / starred / sent / trash / unread |
 | `ga`           | switch to next Google account  |
 | `i`            | (compose) enter insert mode  |
 | `Ctrl-s`       | (compose) send               |

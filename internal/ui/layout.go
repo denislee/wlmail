@@ -715,6 +715,7 @@ func (a *App) layoutMessage(gtx layout.Context) layout.Dimensions {
 				layout.Rigid(spacer(gtx, 6)),
 				layout.Rigid(a.messageHeaderRow("from", m.From)),
 				layout.Rigid(a.messageHeaderRow("to", m.To)),
+				layout.Rigid(a.messageHeaderRow("date", m.Date.Local().Format("Mon, Jan 2, 2006 15:04"))),
 				layout.Rigid(spacer(gtx, 10)),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					px := max(gtx.Dp(unit.Dp(1)), 1)
@@ -898,7 +899,7 @@ Actions
   q              quit
 
 Folders
-  gi  inbox      gs  starred
+  gi  inbox      gs  starred       gu  unread
   gt  sent       gA  all mail       gT  trash
   Ctrl-k         folder picker (j/k, Enter; q/Ctrl-k/Esc to close)
 

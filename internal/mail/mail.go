@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math/rand"
 	"mime"
 	"mime/quotedprintable"
 	"net/http"
@@ -132,11 +133,15 @@ func (c *Client) ListIDs(ctx context.Context, query string, max int64) ([]string
 
 // GetSummaries fetches the summaries for the given list of message IDs
 // concurrently, using a bounded worker pool to limit goroutine count and
-// API pressure.
-func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, error) {
+// API pressure. Returns the successfully fetched summaries (in input
+// order), the IDs that failed after retries, and a fatal error (only
+// non-nil on context cancellation or a similar bail-out condition).
+// Callers must decide how to surface partial failures — silently dropping
+// failed IDs hides messages from the UI, which is rarely what we want.
+func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, []string, error) {
 	const workers = 10
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	type job struct {
@@ -146,7 +151,7 @@ func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, err
 	type result struct {
 		idx int
 		s   Summary
-		ok  bool
+		err error
 	}
 
 	jobs := make(chan job)
@@ -163,7 +168,7 @@ func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, err
 			defer wg.Done()
 			for j := range jobs {
 				s, err := c.summary(ctx, j.id)
-				results <- result{idx: j.idx, s: s, ok: err == nil}
+				results <- result{idx: j.idx, s: s, err: err}
 			}
 		}()
 	}
@@ -185,19 +190,30 @@ func (c *Client) GetSummaries(ctx context.Context, ids []string) ([]Summary, err
 
 	indexed := make([]Summary, len(ids))
 	mask := make([]bool, len(ids))
+	var ctxErr error
 	for r := range results {
-		if r.ok {
+		if r.err == nil {
 			indexed[r.idx] = r.s
 			mask[r.idx] = true
+			continue
+		}
+		if errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded) {
+			ctxErr = r.err
 		}
 	}
 	out := make([]Summary, 0, len(ids))
+	var failed []string
 	for i, ok := range mask {
 		if ok {
 			out = append(out, indexed[i])
+		} else {
+			failed = append(failed, ids[i])
 		}
 	}
-	return out, nil
+	if ctxErr != nil && len(out) == 0 {
+		return nil, failed, ctxErr
+	}
+	return out, failed, nil
 }
 
 // HistoryChanges describes the mailbox deltas returned by Gmail's
@@ -311,7 +327,48 @@ func IsHistoryExpired(err error) bool {
 	return false
 }
 
+// isRetryable reports whether err is a transient Gmail/transport error
+// that's worth retrying. Rate limits (429) and 5xx are the common cases;
+// anything else (auth, not-found, bad request) should fail fast.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ge *googleapi.Error
+	if errors.As(err, &ge) {
+		return ge.Code == 429 || (ge.Code >= 500 && ge.Code < 600)
+	}
+	// Treat unclassified errors (network resets, EOF) as transient so a
+	// single blip doesn't silently drop a message from the list.
+	return true
+}
+
 func (c *Client) summary(ctx context.Context, id string) (Summary, error) {
+	const maxAttempts = 4
+	var last error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			base := time.Duration(1<<uint(attempt-1)) * 200 * time.Millisecond
+			jitter := time.Duration(rand.Int63n(int64(base / 2)))
+			select {
+			case <-ctx.Done():
+				return Summary{}, ctx.Err()
+			case <-time.After(base + jitter):
+			}
+		}
+		s, err := c.summaryOnce(ctx, id)
+		if err == nil {
+			return s, nil
+		}
+		last = err
+		if !isRetryable(err) {
+			return Summary{}, err
+		}
+	}
+	return Summary{}, last
+}
+
+func (c *Client) summaryOnce(ctx context.Context, id string) (Summary, error) {
 	m, err := c.svc.Users.Messages.Get(c.user, id).
 		Format("metadata").
 		MetadataHeaders("From", "Subject", "Date").

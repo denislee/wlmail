@@ -49,6 +49,7 @@ const (
 	ActGotoSent    Action = "goto-sent"
 	ActGotoAll     Action = "goto-all"
 	ActGotoTrash   Action = "goto-trash"
+	ActGotoUnread  Action = "goto-unread"
 	ActSend          Action = "send"
 	ActCancel        Action = "cancel"
 	ActEnterInsert   Action = "enter-insert"
@@ -180,6 +181,7 @@ var normalBindings = map[string]Action{
 	"gt":      ActGotoSent,
 	"gA":      ActGotoAll,
 	"gT":      ActGotoTrash,
+	"gu":      ActGotoUnread,
 	"ga":      ActSwitchAccount,
 	",":       ActSettings,
 	"y":       ActYank,

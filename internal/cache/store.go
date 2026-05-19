@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"log"
 	"sort"
 	"strconv"
 
@@ -81,9 +82,13 @@ func (c *Cache) fetchAndStore(ctx context.Context, q string, max int64) ([]mail.
 	}
 
 	if len(missingIDs) > 0 {
-		newItems, err := c.api.GetSummaries(ctx, missingIDs)
+		newItems, failed, err := c.api.GetSummaries(ctx, missingIDs)
 		if err != nil {
 			return nil, err
+		}
+		if len(failed) > 0 {
+			log.Printf("cache: %d/%d summaries failed for %q (e.g. %s) — list will be incomplete until next refresh",
+				len(failed), len(missingIDs), q, failed[0])
 		}
 		stored, err := c.storedLabelsBatch(ctx, missingIDs)
 		if err != nil {
@@ -212,17 +217,37 @@ func (c *Cache) Sync(ctx context.Context) error {
 	for _, id := range changes.Removed {
 		_ = c.deleteMessage(ctx, id)
 	}
+	// Track ids that arrived via MessagesAdded but couldn't be fetched.
+	// We must skip applying LabelsAdded for these — the messages row
+	// doesn't exist yet, so the FK on message_labels would silently
+	// reject the insert and we'd lock in a half-applied state.
+	pendingAdd := map[string]struct{}{}
 	if len(changes.Added) > 0 {
-		sums, err := c.api.GetSummaries(ctx, changes.Added)
+		sums, failed, err := c.api.GetSummaries(ctx, changes.Added)
 		if err == nil {
 			stored, _ := c.storedLabelsBatch(ctx, changes.Added)
 			for _, s := range sums {
 				labels := mergeLabelsFromExisting(stored[s.ID], "", s.Unread, s.Starred)
 				_ = c.upsertSummary(ctx, s, labels)
 			}
+			if len(failed) > 0 {
+				log.Printf("sync: %d/%d new-message summaries failed (e.g. %s) — will retry on next sync",
+					len(failed), len(changes.Added), failed[0])
+				for _, id := range failed {
+					pendingAdd[id] = struct{}{}
+				}
+			}
+		} else {
+			// Whole batch failed: don't apply LabelsAdded for any of these.
+			for _, id := range changes.Added {
+				pendingAdd[id] = struct{}{}
+			}
 		}
 	}
 	for id, labels := range changes.LabelsAdded {
+		if _, skip := pendingAdd[id]; skip {
+			continue
+		}
 		for _, l := range labels {
 			_ = c.addMessageLabel(ctx, id, l)
 		}
@@ -232,7 +257,10 @@ func (c *Cache) Sync(ctx context.Context) error {
 			_ = c.removeMessageLabel(ctx, id, l)
 		}
 	}
-	if latest != "" {
+	// Only advance the baseline when the batch fully applied. Otherwise
+	// the next sync would skip past the unfetched messages and we'd lose
+	// them permanently.
+	if latest != "" && len(pendingAdd) == 0 {
 		_ = c.kvSet(ctx, "history_id", latest)
 	}
 	return nil
